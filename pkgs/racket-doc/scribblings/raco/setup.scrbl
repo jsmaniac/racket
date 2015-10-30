@@ -14,6 +14,7 @@
                     setup/collection-name
                     setup/collection-search
                     setup/matching-platform
+                    setup/cross-system
                     setup/path-to-relative
                     setup/xref scribble/xref
                     ;; info -- no bindings from this are used
@@ -22,6 +23,7 @@
                     setup/unpack
                     setup/link
                     compiler/compiler
+                    compiler/module-suffix
                     launcher/launcher
                     compiler/sig
                     launcher/launcher-sig
@@ -758,6 +760,13 @@ Optional @filepath{info.rkt} fields trigger additional actions by
    modules are deleted based on the used module's @filepath{.dep}
    file, etc. Supplying a specific list of collections to @exec{raco
    setup} disables this dependency-based deletion of compiled files.}
+
+ @item{@racket[compile-omit-paths], @racket[compile-omit-files], and
+   @racket[compile-include-files] --- Used indirectly via
+   @racket[compile-collection-zos].}
+
+@item{@racket[module-suffixes] and @racket[doc-module-suffixes] ---
+   Used indirectly via @racket[get-module-suffixes].}
 
 ]
 
@@ -1721,7 +1730,7 @@ or @litchar{_}.}
 
 @defmodule[setup/collection-search]
 
-@history[#:added "6.2.900.6"]
+@history[#:added "6.3"]
 
 @defproc[(collection-search [mod-path normalized-lib-module-path?]
                             [#:init result any/c #f]
@@ -1774,9 +1783,14 @@ Returns @racket[#t] if @racket[v] is a symbol, string, or regexp value
 (in the sense of @racket[regexp?]), @racket[#f] otherwise.}
 
 @defproc[(matching-platform? [spec platform-spec?]
-                             [#:system-type sys-type (or/c #f symbol?) (system-type)]
-                             [#:system-library-subpath sys-lib-subpath (or/c #f path?)
-                                                       (system-library-subpath #f)])
+                             [#:cross? cross? any/c #f]
+                             [#:system-type sys-type (or/c #f symbol?) (if cross?
+                                                                           (cross-system-type)
+                                                                           (system-type))]
+                             [#:system-library-subpath sys-lib-subpath (or/c #f path-for-some-system?)
+                                                       (if cross?
+                                                           (cross-system-library-subpath #f)
+                                                           (system-library-subpath #f))])
          boolean?]{
 
 Reports whether @racket[spec] matches @racket[sys-type] or
@@ -1792,7 +1806,73 @@ If @racket[spec] is a string, then the result is @racket[#t] if
 
 If @racket[spec] is a regexp value, then the result is @racket[#t] if
 the regexp matches @racket[(path->string sys-lib-subpath)],
+@racket[#f] otherwise.
+
+@history[#:changed "6.3" @elem{Added @racket[#:cross?] argument and
+                                      changed the contract on @racket[sys-lib-subpath]
+                                      to accept @racket[path-for-some-system?]
+                                      instead of just @racket[path?].}]}
+
+@; ------------------------------------------------------------------------
+
+@section[#:tag "cross-system"]{API for Cross-Platform Configuration}
+
+@defmodule[setup/cross-system]{The @racketmodname[setup/cross-system]
+library provides functions for querying the system properties of a
+destination platform, which can be different than the current platform
+in cross-installation modes.}
+
+A Racket installation includes a @filepath{system.rktd} file in the
+directory reported by @racket[(find-lib-dir)]. When the information in that file
+does not match the running Racket's information, then the
+@racketmodname[setup/cross-system] module infers that Racket is being
+run in cross-installation mode.
+
+For example, if an in-place Racket installation for a different
+platform resides at @nonterm{cross-dir}, then
+
+@commandline{racket -G @nonterm{cross-dir}/etc -X @nonterm{cross-dir}/collects -l- raco pkg}
+
+runs @exec{raco pkg} using the current platform's @exec{racket}
+executable, but using the collections and other configuration
+information of @nonterm{cross-dir}, as well as modifying the packages
+of @nonterm{cross-dir}. That can work as long as no platform-specific
+libraries need to run to perform the requested @exec{raco pkg} action
+(e.g., when installing built packages).
+
+
+@history[#:added "6.3"]
+
+@defproc[(cross-system-type [mode (or/c 'os 'word 'gc 'link 'machine
+                                        'so-suffix 'so-mode 'fs-change)
+                            'os])
+         (or/c symbol? string? bytes? exact-positive-integer? vector?)]{
+
+Like @racket[system-type], but for the target platform instead of the
+current platform in cross-installation mode. When not in
+cross-installation mode, the results are the same as for
+@racket[system-type].}
+
+
+@defproc[(cross-system-library-subpath [mode (or/c 'cgc '3m #f)
+                                             (system-type 'gc)])
+         path-for-some-system?]{
+
+Like @racket[system-library-subpath], but for the target platform
+instead of the current platform in cross-installation mode. When not
+in cross-installation mode, the results are the same as for
+@racket[system-library-subpath].
+
+In cross-installation mode, the target platform may have a different
+path convention than the current platform, so the result is
+@racket[path-for-some-system?] instead of @racket[path?].}
+
+
+@defproc[(cross-installation?) boolean?]{
+
+Returns @racket[#t] if cross-installation mode has been detected,
 @racket[#f] otherwise.}
+
 
 @; ------------------------------------------------------------------------
 

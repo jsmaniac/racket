@@ -36,15 +36,28 @@ structures that are produced by @racket[zo-parse] and consumed by
 
 @defstruct+[(compilation-top zo)
             ([max-let-depth exact-nonnegative-integer?]
+             [binding-namess (hash/c exact-nonnegative-integer?
+                                     (hash/c symbol? stx?))]
              [prefix prefix?]
              [code (or/c form? any/c)])]{
-  Wraps compiled code.  The @racket[max-let-depth] field indicates the
+  Wraps compiled code.
+
+  The @racket[max-let-depth] field indicates the
   maximum stack depth that @racket[code] creates (not counting the
-  @racket[prefix] array).  The @racket[prefix] field describes top-level
-  variables, module-level variables, and quoted syntax-objects accessed
-  by @racket[code].  The @racket[code] field contains executable code;
-  it is normally a @racket[form], but a literal value is represented as
-  itself.}
+  @racket[prefix] array).
+
+  The @racket[binding-namess] field provides a per-phase mapping from
+  symbols that appear in @racket[prefix] for top-level
+  @racket[def-values] forms and in top-level @racket[def-syntaxes]
+  forms. Each symbol is mapped to an identifier that will be bound
+  (after introduction into the namespace) by the definition.
+
+  The @racket[prefix] field describes top-level variables,
+  module-level variables, and quoted syntax-objects accessed by
+  @racket[code].
+
+  The @racket[code] field contains executable code; it is normally a
+  @racket[form], but a literal value is represented as itself.}
 
 @defstruct+[(prefix zo)
             ([num-lifts exact-nonnegative-integer?]
@@ -335,7 +348,7 @@ binding, constructor, etc.}
   values; also, this information is redundant, since it can be inferred
   by the bindings referenced though @racket[closure-map].
 
-  Which a closure captures top-level or module-level variables or
+  When a closure captures top-level or module-level variables or
   refers to a syntax-object constant, the variables and constants are
   represented in the closure by capturing a prefix (in the sense
   of @racket[prefix]).  The @racket[toplevel-map] field indicates
@@ -567,6 +580,22 @@ binding, constructor, etc.}
   which is handled specially by the run-time system.}
 
 
+@defstruct+[(with-immed-mark expr)
+            ([key (or/c expr? seq? any/c)]
+             [val (or/c expr? seq? any/c)]
+             [body (or/c expr? seq? any/c)])]{
+
+  Represents a @racket[(call-with-immediate-continuation-mark key
+  (lambda (_arg) _body) val)] expression that is handled specially by
+  the run-time system to avoid a closure allocation. One initialized
+  slot is pushed onto the stack after @racket[expr] and @racket[val]
+  are evaluated and before @racket[body] is evaluated.
+
+  After each of @racket[key] and @racket[val] is evaluated, the stack is
+  restored to its depth from before evaluating @racket[key] or
+  @racket[val].}
+
+
 @defstruct+[(primval expr)
             ([id exact-nonnegative-integer?])]{
   Represents a direct reference to a variable imported from the run-time
@@ -578,9 +607,13 @@ binding, constructor, etc.}
 @defstruct+[(stx-obj zo)
             ([datum any/c]
              [wrap wrap?]
+             [srcloc (or/c #f srcloc?)]
+             [props (hash/c symbol? any/c)]
              [tamper-status (or/c 'clean 'armed 'tainted)])]{
   Represents a syntax object, where @racket[wrap] contains lexical
-  information and @racket[tamper-status] is taint information. When the
+  information, @racket[srcloc] is the source location,
+  @racket[props] contains preserved properties,
+  and @racket[tamper-status] is taint information. When the
   @racket[datum] part is itself compound, its pieces are wrapped
   as @racket[stx-obj]s, too.
 

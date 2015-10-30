@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 1995-2001 Matthew Flatt
 
     This library is free software; you can redistribute it and/or
@@ -209,7 +209,7 @@ scheme_init_list (Scheme_Env *env)
   p = scheme_make_immed_prim(cons_prim, "cons", 2, 2);
   scheme_cons_proc = p;
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_BINARY_INLINED
-                                                            | SCHEME_PRIM_IS_OMITABLE);
+                                                            | SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant ("cons", p, env);
 
   p = scheme_make_folding_prim(scheme_checked_car, "car", 1, 1, 1);
@@ -224,7 +224,7 @@ scheme_init_list (Scheme_Env *env)
   p = scheme_make_immed_prim(mcons_prim, "mcons", 2, 2);
   scheme_mcons_proc = p;
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_BINARY_INLINED
-                                                            | SCHEME_PRIM_IS_OMITABLE);
+                                                            | SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant ("mcons", p, env);
 
   p = scheme_make_immed_prim(scheme_checked_mcar, "mcar", 1, 1);
@@ -263,7 +263,7 @@ scheme_init_list (Scheme_Env *env)
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_UNARY_INLINED
                                                             | SCHEME_PRIM_IS_BINARY_INLINED
                                                             | SCHEME_PRIM_IS_NARY_INLINED
-                                                            | SCHEME_PRIM_IS_OMITABLE);
+                                                            | SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant ("list", p, env);
 
   REGISTER_SO(scheme_list_star_proc);
@@ -272,7 +272,7 @@ scheme_init_list (Scheme_Env *env)
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_UNARY_INLINED
                                                             | SCHEME_PRIM_IS_BINARY_INLINED
                                                             | SCHEME_PRIM_IS_NARY_INLINED
-                                                            | SCHEME_PRIM_IS_OMITABLE);
+                                                            | SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant ("list*", p, env);
 
   p = scheme_make_folding_prim(immutablep, "immutable?", 1, 1, 1);
@@ -434,13 +434,13 @@ scheme_init_list (Scheme_Env *env)
   p = scheme_make_immed_prim(box, BOX, 1, 1);
   scheme_box_proc = p;
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_UNARY_INLINED
-                                                            | SCHEME_PRIM_IS_OMITABLE);
+                                                            | SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant(BOX, p, env);
 
   REGISTER_SO(scheme_box_immutable_proc);
   p = scheme_make_immed_prim(immutable_box, "box-immutable", 1, 1);
   scheme_box_immutable_proc = p;
-  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_OMITABLE);
+  SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant("box-immutable", p, env);
   
   REGISTER_SO(scheme_box_p_proc);
@@ -604,12 +604,12 @@ scheme_init_list (Scheme_Env *env)
   scheme_add_global_constant("hash-map",
 			     scheme_make_noncm_prim(hash_table_map,
 						    "hash-map",
-						    2, 2),
+						    2, 3),
 			     env);
   scheme_add_global_constant("hash-for-each",
 			     scheme_make_noncm_prim(hash_table_for_each,
 						    "hash-for-each",
-						    2, 2),
+						    2, 3),
 			     env);
 
   scheme_add_global_constant("hash-iterate-first",
@@ -765,7 +765,7 @@ scheme_init_unsafe_list (Scheme_Env *env)
   REGISTER_SO(scheme_unsafe_cons_list_proc);
   p = scheme_make_immed_prim(unsafe_cons_list, "unsafe-cons-list", 2, 2);
   SCHEME_PRIM_PROC_FLAGS(p) |= scheme_intern_prim_opt_flags(SCHEME_PRIM_IS_BINARY_INLINED
-                                                            | SCHEME_PRIM_IS_OMITABLE);
+                                                            | SCHEME_PRIM_IS_OMITABLE_ALLOCATION);
   scheme_add_global_constant ("unsafe-cons-list", p, env);
   scheme_unsafe_cons_list_proc = p;
 
@@ -2552,10 +2552,11 @@ static void no_post_key(const char *name, Scheme_Object *key, int chap)
 static Scheme_Object *do_map_hash_table(int argc,
 					Scheme_Object *argv[],
 					char *name,
-					int keep)
+					int keep,
+                                        int try_sorted)
 {
   int i;
-  Scheme_Object *f;
+  Scheme_Object *f, **sorted_keys;
   Scheme_Object *first, *last = NULL, *v, *p[2], *obj, *chaperone;
 
   obj = argv[0];
@@ -2576,7 +2577,38 @@ static Scheme_Object *do_map_hash_table(int argc,
   else
     first = scheme_void;
 
-  if (SCHEME_BUCKTP(obj)) {
+  /* In simple cases, sort keys. This is useful for quasiquote
+     expansion over hash tables, for example. */
+  if (try_sorted && !chaperone && (SCHEME_HASHTP(obj) || SCHEME_HASHTRP(obj)))
+    sorted_keys = scheme_extract_sorted_keys(obj);
+  else
+    sorted_keys = NULL;
+
+  if (sorted_keys) {
+    if (sorted_keys) {
+      int i, count;
+      count = (SCHEME_HASHTP(obj) ? ((Scheme_Hash_Table *)obj)->count : ((Scheme_Hash_Tree *)obj)->count);
+      for (i = 0; i < count; i++) {
+        if (SCHEME_HASHTP(obj))
+          v = scheme_hash_get((Scheme_Hash_Table *)obj, sorted_keys[i]);
+        else
+          v = scheme_hash_tree_get((Scheme_Hash_Tree *)obj, sorted_keys[i]);
+        if (v) {
+          p[0] = sorted_keys[i];
+          p[1] = v;
+          v = _scheme_apply(f, 2, p);
+          if (keep) {
+            v = lcons(v, scheme_null);
+            if (last)
+              SCHEME_CDR(last) = v;
+            else
+              first = v;
+            last = v;
+          }
+        }
+      }
+    }
+  } else if (SCHEME_BUCKTP(obj)) {
     Scheme_Bucket_Table *hash;
     Scheme_Bucket *bucket;
 
@@ -2683,12 +2715,12 @@ static Scheme_Object *do_map_hash_table(int argc,
 
 static Scheme_Object *hash_table_map(int argc, Scheme_Object *argv[])
 {
-  return do_map_hash_table(argc, argv, "hash-map", 1);
+  return do_map_hash_table(argc, argv, "hash-map", 1, (argc > 2) && SCHEME_TRUEP(argv[2]));
 }
 
 static Scheme_Object *hash_table_for_each(int argc, Scheme_Object *argv[])
 {
-  return do_map_hash_table(argc, argv, "hash-for-each", 0);
+  return do_map_hash_table(argc, argv, "hash-for-each", 0, (argc > 2) && SCHEME_TRUEP(argv[2]));
 }
 
 static Scheme_Object *hash_table_next(const char *name, mzlonglong start, int argc, Scheme_Object *argv[])

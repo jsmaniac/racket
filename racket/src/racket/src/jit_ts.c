@@ -91,6 +91,8 @@ define_ts_s_s(scheme_extflvector_length, FSRC_MARKS)
 define_ts_s_s(scheme_fxvector_length, FSRC_MARKS)
 define_ts_s_s(scheme_string_length, FSRC_MARKS)
 define_ts_s_s(scheme_byte_string_length, FSRC_MARKS)
+define_ts_ss_s(scheme_string_eq_2, FSRC_MARKS)
+define_ts_ss_s(scheme_byte_string_eq_2, FSRC_MARKS)
 define_ts_s_s(scheme_unbox, FSRC_MARKS)
 define_ts_si_s(scheme_struct_ref, FSRC_MARKS)
 define_ts_sis_v(scheme_struct_set, FSRC_MARKS)
@@ -103,6 +105,7 @@ define_ts_iSs_s(scheme_struct_getter, FSRC_MARKS)
 define_ts_iSs_s(scheme_struct_setter, FSRC_MARKS)
 define_ts_iS_s(scheme_box_cas, FSRC_MARKS)
 define_ts__v(chaperone_set_mark, FSRC_MARKS)
+define_ts_ss_s(scheme_chaperone_get_immediate_cc_mark, FSRC_MARKS)
 define_ts_iS_s(scheme_checked_char_to_integer, FSRC_MARKS)
 define_ts_iS_s(scheme_checked_integer_to_char, FSRC_MARKS)
 # ifndef CAN_INLINE_ALLOC
@@ -112,6 +115,8 @@ define_ts_iS_s(scheme_check_not_undefined, FSRC_MARKS)
 define_ts_iS_s(scheme_check_assign_not_undefined, FSRC_MARKS)
 define_ts_iS_s(scheme_foreign_ptr_ref, FSRC_MARKS)
 define_ts_iS_v(scheme_foreign_ptr_set, FSRC_MARKS)
+define_ts_s_s(scheme_cpointer_tag, FSRC_MARKS)
+define_ts_ss_v(scheme_set_cpointer_tag, FSRC_MARKS)
 #endif
 
 #ifdef JITCALL_TS_PROCS
@@ -203,6 +208,7 @@ define_ts_s_s(scheme_box, FSRC_OTHER)
 # define ts_scheme_set_box scheme_set_box
 # define ts_scheme_box_cas scheme_box_cas
 # define ts_chaperone_set_mark chaperone_set_mark
+# define ts_scheme_chaperone_get_immediate_cc_mark scheme_chaperone_get_immediate_cc_mark
 # define ts_scheme_vector_length scheme_vector_length
 # define ts_scheme_flvector_length scheme_flvector_length
 #ifdef MZ_LONG_DOUBLE
@@ -214,6 +220,8 @@ define_ts_s_s(scheme_box, FSRC_OTHER)
 # define ts_scheme_struct_ref scheme_struct_ref
 # define ts_scheme_struct_set scheme_struct_set
 # define ts_scheme_equal scheme_equal
+# define ts_scheme_string_eq_2 scheme_string_eq_2
+# define ts_scheme_byte_string_eq_2 scheme_byte_string_eq_2
 # define ts_extract_one_cc_mark_to_tag extract_one_cc_mark_to_tag
 # define ts_tail_call_with_values_from_multiple_result tail_call_with_values_from_multiple_result
 # define ts_raise_bad_call_with_values raise_bad_call_with_values
@@ -250,4 +258,6 @@ define_ts_s_s(scheme_box, FSRC_OTHER)
 # define ts_scheme_check_assign_not_undefined scheme_check_assign_not_undefined
 # define ts_scheme_foreign_ptr_ref scheme_foreign_ptr_ref
 # define ts_scheme_foreign_ptr_set scheme_foreign_ptr_set
+# define ts_scheme_cpointer_tag scheme_cpointer_tag
+# define ts_scheme_set_cpointer_tag scheme_set_cpointer_tag
 #endif

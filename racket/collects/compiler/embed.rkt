@@ -12,11 +12,13 @@
          setup/variant
          file/ico
          racket/private/so-search
+         setup/cross-system
          "private/winsubsys.rkt"
          "private/macfw.rkt"
          "private/mach-o.rkt"
          "private/elf.rkt"
          "private/windlldir.rkt"
+         "private/pe-rsrc.rkt"
          "private/collects-path.rkt"
          "private/configdir.rkt"
          "find-exe.rkt")
@@ -83,10 +85,10 @@
   #f)
 
 (define (embedding-executable-is-actually-directory? mred?)
-  (and mred? (eq? 'macosx (system-type))))
+  (and mred? (eq? 'macosx (cross-system-type))))
 
 (define (embedding-executable-put-file-extension+style+filters mred?)
-  (case (system-type)
+  (case (cross-system-type)
     [(windows) (values "exe" null '(("Executable" "*.exe")))]
     [(macosx) (if mred?
                   (values "app" '(enter-packages) '(("App" "*.app")))
@@ -101,7 +103,7 @@
                   (if (regexp-match re (path->bytes path))
                       path
                       (path-replace-suffix path sfx)))])
-    (case (system-type)
+    (case (cross-system-type)
       [(windows) (fixup #rx#"[.][eE][xX][eE]$" #".exe")]
       [(macosx) (if mred?
                     (fixup #rx#"[.][aA][pP][pP]$" #".app")
@@ -117,7 +119,7 @@
       dest))
 
 (define exe-suffix?
-  (delay (equal? #"i386-cygwin" (path->bytes (system-library-subpath)))))
+  (delay (equal? #"i386-cygwin" (path->bytes (cross-system-library-subpath)))))
 
 ;; Find the magic point in the binary:
 (define (find-cmdline what rx)
@@ -1342,7 +1344,7 @@
                 cmdline
                 [aux null]
                 [launcher? #f]
-                [variant (system-type 'gc)]
+                [variant (cross-system-type 'gc)]
                 [collects-path #f])
     (create-embedding-executable dest
                                  #:mred? mred?
@@ -1373,7 +1375,7 @@
                                      #:cmdline [cmdline null]
                                      #:aux [aux null]
                                      #:launcher? [launcher? #f]
-                                     #:variant [variant (system-type 'gc)]
+                                     #:variant [variant (cross-system-type 'gc)]
                                      #:collects-path [collects-path #f]
                                      #:collects-dest [collects-dest #f]
                                      #:on-extension [on-extension #f]
@@ -1388,18 +1390,18 @@
                          (let ([m (assq 'forget-exe? aux)])
                            (or (not m)
                                (not (cdr m))))))
-  (define unix-starter? (and (eq? (system-type) 'unix)
+  (define unix-starter? (and (eq? (cross-system-type) 'unix)
                              (let ([m (assq 'original-exe? aux)])
                                (or (not m)
                                    (not (cdr m))))))
-  (define long-cmdline? (or (eq? (system-type) 'windows)
-                            (eq? (system-type) 'macosx)
+  (define long-cmdline? (or (eq? (cross-system-type) 'windows)
+                            (eq? (cross-system-type) 'macosx)
                             unix-starter?))
   (define relative? (let ([m (assq 'relative? aux)])
                       (and m (cdr m))))
   (define collects-path-bytes (collects-path->bytes 
                                ((if (and mred?
-                                         (eq? 'macosx (system-type)))
+                                         (eq? 'macosx (cross-system-type)))
                                     mac-mred-collects-path-adjust
                                     values)
                                 collects-path)))
@@ -1411,12 +1413,12 @@
                            cmdline)) . < . 80))
     (error 'create-embedding-executable "command line too long: ~e" cmdline))
   (check-collects-path 'create-embedding-executable collects-path collects-path-bytes)
-  (let ([exe (find-exe mred? variant)])
+  (let ([exe (find-exe #:cross? #t mred? variant)])
     (when verbose?
       (eprintf "Copying to ~s\n" dest))
     (let-values ([(dest-exe orig-exe osx?)
                   (cond
-                    [(and mred? (eq? 'macosx (system-type)))
+                    [(and mred? (eq? 'macosx (cross-system-type)))
                      (values (prepare-macosx-mred exe dest aux variant) 
                              (mac-dest->executable (build-path (find-lib-dir) "Starter.app")
                                                    #t)
@@ -1451,7 +1453,7 @@
                                     (delete-file dest)))
                               (raise x))])
         (define old-perms (ensure-writable dest-exe))
-        (when (and (eq? 'macosx (system-type))
+        (when (and (eq? 'macosx (cross-system-type))
                    (not unix-starter?))
           (let ([m (or (assq 'framework-root aux)
                        (and relative? '(framework-root . #f)))])
@@ -1474,7 +1476,7 @@
                                             "/")
                                            dest
                                            mred?))))))
-        (when (eq? 'windows (system-type))
+        (when (eq? 'windows (cross-system-type))
           (let ([m (or (assq 'dll-dir aux)
                        (and relative? '(dll-dir . #f)))])
             (if m
@@ -1504,7 +1506,7 @@
                         ;; adjust relative path (since GRacket is off by one):
                         (update-config-dir (mac-dest->executable dest mred?)
                                            "../../../etc/")]
-                       [(eq? 'windows (system-type))
+                       [(eq? 'windows (cross-system-type))
                         (unless keep-exe?
                           ;; adjust relative path (since GRacket is off by one):
                           (update-config-dir dest "etc/"))])))
@@ -1538,7 +1540,7 @@
 			   [decl-end-s (number->string decl-end)]
                        [end-s (number->string end)])
 		       (append (if launcher?
-				   (if (and (eq? 'windows (system-type))
+				   (if (and (eq? 'windows (cross-system-type))
 					    keep-exe?)
 				       ;; argv[0] replacement:
 				       (list (path->string 
@@ -1582,54 +1584,76 @@
                   full-cmdline)
                  (display "\0\0\0\0" out))])
           (let-values ([(start decl-end end cmdline-end)
-                        (if (and (eq? (system-type) 'macosx)
-                                 (not unix-starter?))
-                            ;; For Mach-O, we know how to add a proper segment
-                            (let ([s (open-output-bytes)])
-                              (define decl-len (write-module s))
-                              (let* ([s (get-output-bytes s)]
-                                     [cl (let ([o (open-output-bytes)])
-                                           ;; position is relative to __PLTSCHEME:
-                                           (write-cmdline (make-full-cmdline 0 decl-len (bytes-length s)) o)
-                                           (get-output-bytes o))])
-                                (let ([start (add-plt-segment 
-                                              dest-exe 
-                                              (bytes-append
-                                               s
-                                               cl))])
-                                  (let ([start 0]) ; i.e., relative to __PLTSCHEME
-                                    (values start
-                                            (+ start decl-len)
-                                            (+ start (bytes-length s))
-                                            (+ start (bytes-length s) (bytes-length cl)))))))
-                            ;; Unix starter: Maybe ELF, in which case we 
-                            ;; can add a proper section
-                            (let-values ([(s e dl p)
-                                          (if unix-starter?
-                                              (add-racket-section 
-                                               orig-exe 
-                                               dest-exe
-                                               (if launcher? #".rackcmdl" #".rackprog")
-                                               (lambda (start)
-                                                 (let ([s (open-output-bytes)])
-                                                   (define decl-len (write-module s))
-                                                   (let ([p (file-position s)])
-                                                     (display (make-starter-cmdline
-                                                               (make-full-cmdline start 
-                                                                                  (+ start decl-len)
-                                                                                  (+ start p)))
-                                                              s)
-                                                     (values (get-output-bytes s) decl-len p)))))
-                                              (values #f #f #f #f))])
-                              (if (and s e)
-                                  ;; ELF succeeded:
-                                  (values s (+ s dl) (+ s p) e)
-                                  ;; Otherwise, just add to the end of the file:
-                                  (let ([start (file-size dest-exe)])
-                                    (define decl-end
-                                      (call-with-output-file* dest-exe write-module 
-                                                              #:exists 'append))
-                                    (values start decl-end (file-size dest-exe) #f)))))])
+                        (cond
+                         [(eq? (cross-system-type) 'windows)
+                          ;; Add as a resource
+                          (define o (open-output-bytes))
+                          (define decl-len (write-module o))
+                          (define init-len (bytes-length (get-output-bytes o)))
+                          (write-cmdline (make-full-cmdline 0 decl-len init-len) o)
+                          (define bstr (get-output-bytes o))
+                          (define cmdline-len (- (bytes-length bstr) init-len))
+                          (define-values (pe rsrcs) (call-with-input-file*
+                                                     dest-exe
+                                                     read-pe+resources))
+                          (define new-rsrcs (resource-set rsrcs
+                                                          ;; Racket's "user-defined" type for excutable 
+                                                          ;; plus command line:
+                                                          257
+                                                          1
+                                                          1033 ; U.S. English
+                                                          bstr))
+                          (update-resources dest-exe pe new-rsrcs)
+                          (values 0 decl-len init-len (+ init-len cmdline-len))]
+                         [(and (eq? (cross-system-type) 'macosx)
+                               (not unix-starter?))
+                          ;; For Mach-O, we know how to add a proper segment
+                          (define s (open-output-bytes))
+                          (define decl-len (write-module s))
+                          (let* ([s (get-output-bytes s)]
+                                 [cl (let ([o (open-output-bytes)])
+                                       ;; position is relative to __PLTSCHEME:
+                                       (write-cmdline (make-full-cmdline 0 decl-len (bytes-length s)) o)
+                                       (get-output-bytes o))])
+                            (let ([start (add-plt-segment 
+                                          dest-exe 
+                                          (bytes-append
+                                           s
+                                           cl))])
+                              (let ([start 0]) ; i.e., relative to __PLTSCHEME
+                                (values start
+                                        (+ start decl-len)
+                                        (+ start (bytes-length s))
+                                        (+ start (bytes-length s) (bytes-length cl))))))]
+                         [else
+                          ;; Unix starter: Maybe ELF, in which case we 
+                          ;; can add a proper section
+                          (define-values (s e dl p)
+                            (if unix-starter?
+                                (add-racket-section 
+                                 orig-exe 
+                                 dest-exe
+                                 (if launcher? #".rackcmdl" #".rackprog")
+                                 (lambda (start)
+                                   (let ([s (open-output-bytes)])
+                                     (define decl-len (write-module s))
+                                     (let ([p (file-position s)])
+                                       (display (make-starter-cmdline
+                                                 (make-full-cmdline start 
+                                                                    (+ start decl-len)
+                                                                    (+ start p)))
+                                                s)
+                                       (values (get-output-bytes s) decl-len p)))))
+                                (values #f #f #f #f)))
+                          (if (and s e)
+                             ;; ELF succeeded:
+                             (values s (+ s dl) (+ s p) e)
+                             ;; Otherwise, just add to the end of the file:
+                             (let ([start (file-size dest-exe)])
+                               (define decl-end
+                                 (call-with-output-file* dest-exe write-module 
+                                                         #:exists 'append))
+                               (values start decl-end (file-size dest-exe) #f)))])])
             (when unix-starter?
               (adjust-config-dir))
             (when verbose?
@@ -1646,7 +1670,7 @@
                    [osx?
                     ;; default path in `gracket' is off by one:
                     (set-collects-path dest-exe #"../../../collects")]
-                   [(eq? 'windows (system-type))
+                   [(eq? 'windows (cross-system-type))
                     (unless keep-exe?
                       ;; off by one in this case, too:
                       (set-collects-path dest-exe #"collects"))])])
@@ -1703,7 +1727,7 @@
                                                "cmdline"
                                                #"\\[Replace me for EXE hack")))]
                          [anotherpos (and mred?
-                                          (eq? 'windows (system-type))
+                                          (eq? 'windows (cross-system-type))
                                           (let ([m (assq 'single-instance? aux)])
                                             (and m (not (cdr m))))
                                           (with-input-from-file dest-exe 
@@ -1729,22 +1753,22 @@
                         (unless cmdline-done?
                           (write-cmdline full-cmdline out))
                         (when long-cmdline?
-                          ;; cmdline written at the end;
+                          ;; cmdline written at the end, in a resource, etc.;
                           ;; now put forwarding information at the normal cmdline pos
                           (let ([new-end (or cmdline-end
                                              (file-position out))])
                             (file-position out cmdpos)
                             (fprintf out "~a...~a~a"
-                                     (if (and keep-exe? (eq? 'windows (system-type))) "*" "?")
+                                     (if (and keep-exe? (eq? 'windows (cross-system-type))) "*" "?")
                                      (integer->integer-bytes end 4 #t #f)
                                      (integer->integer-bytes (- new-end end) 4 #t #f)))))
                       (lambda ()
                         (close-output-port out)))
-                     (let ([m (and (eq? 'windows (system-type))
+                     (let ([m (and (eq? 'windows (cross-system-type))
                                    (assq 'ico aux))])
                        (when m
-                         (replace-icos (read-icos (cdr m)) dest-exe)))
-                     (let ([m (and (eq? 'windows (system-type))
+                         (replace-all-icos (read-icos (cdr m)) dest-exe)))
+                     (let ([m (and (eq? 'windows (cross-system-type))
                                    (assq 'subsystem aux))])
                        (when m
                          (set-subsystem dest-exe (cdr m)))))]))))

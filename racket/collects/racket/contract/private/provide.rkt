@@ -66,18 +66,12 @@
 
   ;; keys for syntax property used below
   (define rename-id-key (gensym 'contract:rename-id))
-  (define lifted-key    (gensym 'contract:lifted))
   (define neg-party-key (gensym 'contract:neg-party))
 
   ;; identifier? identifier? -> identifier?
   ;; add a property that tells clients what the exported id was
   (define (add-rename-id rename-id partial-id)
     (syntax-property partial-id rename-id-key rename-id))
-
-  ;; syntax? -> syntax?
-  ;; tells clients that the expression is a lifted application
-  (define (add-lifted-property stx)
-    (syntax-property stx lifted-key #t))
 
   ;; identifier? -> identifier?
   ;; tells clients that the application of this id has an extra inserted argument
@@ -92,9 +86,10 @@
   (define (contract-neg-party-property stx)
     (syntax-property stx neg-party-key))
 
+  (define global-saved-id-table (make-hasheq))
+
   (struct provide/contract-arrow-transformer provide/contract-info
-    (saved-id-table 
-     saved-ho-id-table 
+    (saved-ho-id-table
      partially-applied-id
      extra-neg-party-argument-fn
      valid-argument-lists)
@@ -102,7 +97,6 @@
     prop:set!-transformer
     (λ (self stx)
       (let ([partially-applied-id (provide/contract-arrow-transformer-partially-applied-id self)]
-            [saved-id-table (provide/contract-arrow-transformer-saved-id-table self)]
             [saved-ho-id-table (provide/contract-arrow-transformer-saved-ho-id-table self)]
             [extra-neg-party-argument-fn 
              (provide/contract-arrow-transformer-extra-neg-party-argument-fn self)]
@@ -115,12 +109,13 @@
               (let* ([key (syntax-local-lift-context)]
                      ;; Already lifted in this lifting context?
                      [lifted-neg-party
-                      (or (hash-ref saved-id-table key #f)
+                      (or (hash-ref global-saved-id-table key #f)
                           ;; No: lift the neg name creation
                           (syntax-local-introduce 
                            (syntax-local-lift-expression
-                            #'(quote-module-name))))])
-                (when key (hash-set! saved-id-table key lifted-neg-party))
+                            (add-lifted-property
+                             #'(quote-module-name)))))])
+                (when key (hash-set! global-saved-id-table key lifted-neg-party))
                 ;; Expand to a use of the lifted expression:
                 (define (adjust-location new-stx)
                   (datum->syntax new-stx (syntax-e new-stx) stx new-stx))
@@ -160,7 +155,6 @@
               ;; contexts, delay expansion until it's a good time to lift
               ;; expressions:
               (quasisyntax/loc stx (#%expression #,stx)))))))
-  
   
   (struct provide/contract-transformer provide/contract-info (saved-id-table partially-applied-id)
     #:property
@@ -222,7 +216,7 @@
   (define (make-provide/contract-arrow-transformer rename-id contract-id id pai enpfn val)
     (provide/contract-arrow-transformer rename-id
                                         contract-id id
-                                        (make-hasheq) (make-hasheq)
+                                        (make-hasheq)
                                         pai enpfn val)))
 
 

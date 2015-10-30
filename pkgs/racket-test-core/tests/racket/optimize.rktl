@@ -885,7 +885,6 @@
 	  [t2 (get-output-bytes s2)])
       (or (bytes=? t1 t2)
 	  (begin
-            #;
 	    (printf "~s\n~s\n" 
                      (zo-parse (open-input-bytes t1))
                      (zo-parse (open-input-bytes t2)))
@@ -896,7 +895,11 @@
   (case-lambda
    [(expr1 expr2) (test-comp expr1 expr2 #t)]
    [(expr1 expr2 same?)
-    (test same? `(compile ,same? ,expr2) (comp=? (compile expr1) (compile expr2)))]))
+    (define (->stx s)
+      ;; Give `s` a minimal location, so that other macro locations
+      ;; don't bleed through:
+      (datum->syntax #f s (vector 'here #f #f #f #f)))
+    (test same? `(compile ,same? ,expr2) (comp=? (compile (->stx expr1)) (compile (->stx expr2))))]))
 
 (let ([x (compile '(lambda (x) x))])
   (test #t 'fixpt (eq? x (compile x))))
@@ -1669,7 +1672,9 @@
 	   '(letrec ([x (cons 1 1)][y x]) (cons x x)))
 
 (test-comp '(let ([f (lambda (x) x)]) f)
-	   (syntax-property (datum->syntax #f '(lambda (x) x)) 'inferred-name 'f))
+	   (syntax-property (datum->syntax #f '(lambda (x) x) (vector 'here #f #f #f #f))
+                            'inferred-name
+                            'f))
 
 (test-comp '(letrec ([f (lambda (x) x)])
 	      (f 10)
@@ -1999,19 +2004,52 @@
     (test '((1) (2)) f (lambda (n) (set! v n) n))
     (test 2 values v)))
 
+;; Make sure `values` splitting doesn't use wrong clock values
+;; leading to reordering:
+(test-comp '(lambda (p)
+             (define-values (x y) (values (car p) (cdr p)))
+             (values y x))
+           '(lambda (p)
+             (values (unsafe-cdr p) (car p)))
+           #f)
+(test-comp '(lambda (p)
+             (define-values (x y) (values (car p) (cdr p)))
+             (values y x))
+           '(lambda (p)
+             (let ([x (car p)])
+               (values (unsafe-cdr p) x))))
+
 (test-comp '(lambda (z)
-             ;; Moving `(list z)` before `(list (z 2))`
-             ;; would reorder, which is not allowed, so check
-             ;; that the optimizer can keep track:
+             ;; Moving `(list z)` after `(list (z 2))` is not allowed
+             ;; in case `(z 2)` captures a continuation:
              (let-values ([(a b) (values (list z) (list (z 2)))])
-               (list a b)))
+               (list b a)))
            '(lambda (z)
-              (list (list z) (list (z 2)))))
+              (list (list (z 2)) (list z)))
+           #f)
+(test-comp '(lambda (z)
+              (let-values ([(a b) (values (list (z 2)) (list z))])
+                (list a a b)))
+           '(lambda (z)
+             (let ([a (list (z 2))])
+               (list a a (list z)))))
+
+;; It would be nice if the optimizer could do these two, but because it
+;; involves temporarily reordering `(list z)` and `(list (z 2))`
+;; (which is not allowed in case `(z 2)` captures a continuation),
+;; the optimizer currently cannot manage it:
+#;
 (test-comp '(lambda (z)
               (let-values ([(a b) (values (list (z 2)) (list z))])
                 (list a b)))
            '(lambda (z)
              (list (list (z 2)) (list z))))
+#;
+(test-comp '(lambda (z)
+              (let-values ([(a b) (values (list z) (list (z 2)))])
+                (list a b)))
+           '(lambda (z)
+             (list (list z) (list (z 2)))))
 
 (test-comp '(module m racket/base
              ;; Reference to a ready module-level variable shouldn't
@@ -3535,6 +3573,16 @@
            #f)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that the unused continuations are removed
+
+(test-comp '(call-with-current-continuation (lambda (ignored) 5))
+           5)
+(test-comp '(call-with-composable-continuation (lambda (ignored) 5))
+           5)
+(test-comp '(call-with-escape-continuation (lambda (ignored) 5))
+           5)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check splitting of definitions
 (test-comp `(module m racket/base
               (define-values (x y) (values 1 2)))
@@ -4229,8 +4277,8 @@
    (write-bytes
     (zo-marshal
      (match m
-       [(compilation-top max-let-depth prefix code)
-        (compilation-top max-let-depth prefix 
+       [(compilation-top max-let-depth binding-namess prefix code)
+        (compilation-top max-let-depth binding-namess prefix 
                          (let ([body (mod-body code)])
                            (struct-copy mod code [body
                                                   (match body 
@@ -4254,6 +4302,35 @@
                               [read-accept-compiled #t])
                  (eval (read (open-input-bytes (get-output-bytes o2)))))
                exn:fail:read?))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; make sure sfs pass doesn't add a nested begin0
+;; to clear the variables used in the first expression
+
+(let ()
+  (define c
+    '(module c racket/base
+       (define z (let ([result (random)])
+                   (begin0 (lambda () result) (newline))))))
+
+  (define o (open-output-bytes))
+
+  (parameterize ([current-namespace (make-base-namespace)])
+    (write (compile c) o))
+
+  (define m (zo-parse (open-input-bytes (get-output-bytes o))))
+
+  ; extract the content of the begin0 expression
+  (define (analyze-beg0 m)
+    (define def-z (car (mod-body (compilation-top-code m))))
+    (define body-z (let-one-body (def-values-rhs def-z)))
+    (define expr-z (car (beg0-seq body-z)))
+    (cond
+      [(lam? expr-z) 'ok]
+      [(beg0? expr-z) 'not-reduced-beg0-in-sfs]
+      [else 'unexpected]))
+
+  (test 'ok (lambda () (analyze-beg0 m))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; make sure `begin0' propertly propagates "multiple results" flags
@@ -4430,6 +4507,14 @@
   (define-inline (odd? x)  (if (zero? x) #f (even? (sub1 x))))
   (test/output (odd? 2)
                #f "")
+
+  ;; multiple keyword arguments that have to be sorted:
+  (define-inline (sub #:a a #:b b)
+    (- a b))
+  (test/output (sub #:a 2 #:b 1)
+               1 "")
+  (test/output (sub #:b 1 #:a 2)
+               1 "")
   )
 
 

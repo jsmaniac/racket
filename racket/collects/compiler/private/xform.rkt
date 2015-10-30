@@ -233,6 +233,9 @@
         (define IS "(?:u|U|l|L)*")
         
         (define symbol-complex (trans (seqs L (arbno (alt L D)))))
+
+        ;; Accomodate things like 10_1 in `availability` attributes:
+        (define pseudo-symbol-complex (trans (seqs (arbno D) "_" (arbno D))))
         
         (define number-complex
           (trans (alt*
@@ -372,6 +375,11 @@
                            [(not simple)
                             (cond
                               [(regexp-match-positions symbol-complex s p)
+                               => (lambda (m)
+                                    (loop (cdar m)
+                                          (cons (symbol (subbytes s (caar m) (cdar m)))
+                                                result)))]
+                              [(regexp-match-positions pseudo-symbol-complex s p)
                                => (lambda (m)
                                     (loop (cdar m)
                                           (cons (symbol (subbytes s (caar m) (cdar m)))
@@ -907,6 +915,7 @@
                __error __errno_location __toupper __tolower ___errno
                __attribute__ __mode__ ; not really functions in gcc
                __iob_func ; VC 8
+               __acrt_iob_func ; VC 14.0 (2015)
                |GetStdHandle| |__CFStringMakeConstantString|
                _vswprintf_c
                
@@ -956,6 +965,7 @@
           '(exit
             scheme_wrong_type scheme_wrong_number scheme_wrong_syntax
             scheme_wrong_count scheme_wrong_count_m scheme_wrong_rator scheme_read_err
+            scheme_wrong_contract scheme_contract_error
             scheme_raise_exn scheme_signal_error
             scheme_raise_out_of_memory
             ))
@@ -3996,8 +4006,6 @@
                       ;; Not a decl
                       (values (reverse decls) el))))))
         
-        (define braces-then-semi '(typedef struct union enum __extension__))
-        
         (define (get-one e comma-sep?)
           (let loop ([e e][result null][first #f][second #f])
             (cond
@@ -4017,7 +4025,7 @@
               [(and (eq? '|,| (tok-n (car e))) comma-sep?)
                (values (reverse (cons (car e) result)) (cdr e))]
               [(and (braces? (car e))
-                    (not (memq first '(typedef enum __extension__)))
+                    (not (memq first '(typedef enum)))
                     (or (not (memq first '(static extern const struct union)))
                         (equal? second "C") ; => extern "C" ...
                         (equal? second "C++") ; => extern "C++" ...
@@ -4029,7 +4037,10 @@
                      (values (reverse (cons (car e) result)) rest)
                      (values (reverse (list* (car rest) (car e) result)) (cdr rest))))]
               [else (loop (cdr e) (cons (car e) result)
-                          (or first (tok-n (car e)))
+                          (or first (let ([s (tok-n (car e))])
+                                      (if (memq s '(__extension__))
+                                          #f ; skip over annotation when deciding shape
+                                          s)))
                           (or second (and first (tok-n (car e)))))])))
         
         (define (foldl-statement e comma-sep? f a-init)

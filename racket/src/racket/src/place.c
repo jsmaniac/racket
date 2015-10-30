@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2009-2014 PLT Design Inc.
+  Copyright (c) 2009-2015 PLT Design Inc.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Library General Public
@@ -1288,10 +1288,10 @@ static Scheme_Object *trivial_copy(Scheme_Object *so, Scheme_Object **master_cha
       if (SHARED_ALLOCATEDP(so)) {
         scheme_hash_key(so);
         if (master_chain) {
-          /* Keep track of all the master-allocated objects that are
-             in a message, so that the corresponding objects can be
-             marked during a master GC, in case on happens before the
-             message is received. */
+          /* Keep track of all the objects that are in a message that
+             refer to master-allocated objects, so that the
+             corresponding objects can be marked during a master GC,
+             in case one happens before the message is received. */
           Scheme_Object *mc;
           mc = scheme_make_raw_pair(so, *master_chain);
           *master_chain = mc;
@@ -2828,10 +2828,13 @@ static Scheme_Object *places_serialize(Scheme_Object *so, void **msg_memory, Sch
 #endif
 }
 
-Scheme_Object *scheme_places_deserialize(Scheme_Object *so, void *msg_memory) 
+static Scheme_Object *places_deserialize(Scheme_Object *so, void *msg_memory, Scheme_Thread *from_p)
 /* The caller must immediately drop any reference to `so' and
    `msg_memory' after this function returns; otherwise, since the
-   `msg_memory' page may be deallocated, a GC could crash. */
+   `msg_memory' page may be deallocated, a GC could crash.
+   Also, we have to clear out the in-flight references in `from_p`
+   before the pages are discarded or adopted (where the latter
+   can trigger a GC, which creates the main problem) */
 {
 #if defined(MZ_USE_PLACES) && defined(MZ_PRECISE_GC)
   Scheme_Object *new_so = so;
@@ -2842,12 +2845,16 @@ Scheme_Object *scheme_places_deserialize(Scheme_Object *so, void *msg_memory)
   /* small messages are deemed to be < 1k, this could be tuned in either direction */
   if (GC_message_small_objects_size(msg_memory, 1024)) {
     new_so = do_places_deep_copy(so, mzPDC_UNCOPY, 1, NULL, NULL);
+    from_p->place_channel_msg_in_flight = NULL;
+    from_p->place_channel_msg_chain_in_flight = NULL;
     GC_dispose_short_message_allocator(msg_memory);
     /* from this point, we must return immediately, so that any
        reference to `so' can be dropped before GC. */
     msg_memory = NULL;
   }
   else {
+    from_p->place_channel_msg_in_flight = NULL;
+    from_p->place_channel_msg_chain_in_flight = NULL;
     GC_adopt_message_allocator(msg_memory);
     msg_memory = NULL;
 #if !defined(SHARED_TABLES)
@@ -3504,12 +3511,14 @@ static void lock_and_register_place_object_with_channel(Scheme_Place_Async_Chann
   }
 }
 
-static Scheme_Object *place_async_try_receive_raw(Scheme_Place_Async_Channel *ch, void **msg_memory_ptr,
+static Scheme_Object *place_async_try_receive_raw(Scheme_Place_Async_Channel *ch,
+                                                  void **msg_memory_ptr,
+                                                  void **msg_chain_ptr,
                                                   int *_no_writers) 
 /* The result must not be retained past extraction from `*msg_memory_ptr'! */
 {
   Scheme_Object *msg = NULL;
-  void *msg_memory = NULL;
+  void *msg_memory = NULL, *msg_chain = NULL;
   intptr_t sz;
 
   lock_and_register_place_object_with_channel(ch, (Scheme_Object *) place_object);
@@ -3517,10 +3526,13 @@ static Scheme_Object *place_async_try_receive_raw(Scheme_Place_Async_Channel *ch
     if (ch->count > 0) { /* GET MSG */
       msg = ch->msgs[ch->out];
       msg_memory = ch->msg_memory[ch->out];
+      msg_chain = ch->msg_chains[ch->out];
 
       ch->msgs[ch->out] = NULL;
       ch->msg_memory[ch->out] = NULL;
       ch->msg_chains[ch->out] = NULL;
+
+      /* No GCs from here until msg_chain is registered */
 
       --ch->count;
       ch->out = ((ch->out + 1) % ch->size);
@@ -3535,34 +3547,42 @@ static Scheme_Object *place_async_try_receive_raw(Scheme_Place_Async_Channel *ch
     *_no_writers = 1;
   mzrt_mutex_unlock(ch->lock);
 
-  if (msg) {
-    intptr_t msg_size;
-    msg_size = GC_message_allocator_size(msg_memory);
-    log_place_event("id %d: get message of %" PRIdPTR " bytes", "get", 1, msg_size);
-  }
-
   *msg_memory_ptr = msg_memory;
+  *msg_chain_ptr = msg_chain;
+
   return msg;
 }
 
 static void cleanup_msg_memmory(void *thread) {
   Scheme_Thread *p = thread;
   if (p->place_channel_msg_in_flight) {
+    p->place_channel_msg_chain_in_flight = NULL;
     GC_destroy_orphan_msg_memory(p->place_channel_msg_in_flight);
     p->place_channel_msg_in_flight = NULL;
+  }
+}
+
+static void log_received_msg(Scheme_Object *msg, void *msg_memory)
+{
+  if (msg) {
+    intptr_t msg_size;
+    msg_size = GC_message_allocator_size(msg_memory);
+    log_place_event("id %d: get message of %" PRIdPTR " bytes", "get", 1, msg_size);
   }
 }
 
 static Scheme_Object *place_async_try_receive(Scheme_Place_Async_Channel *ch, int *_no_writers) {
   Scheme_Object *msg = NULL;
   Scheme_Thread *p = scheme_current_thread;
-  GC_CAN_IGNORE void *msg_memory;
+  GC_CAN_IGNORE void *msg_memory, *msg_chain;
   BEGIN_ESCAPEABLE(cleanup_msg_memmory, p);
-  msg = place_async_try_receive_raw(ch, &msg_memory, _no_writers);
+  msg = place_async_try_receive_raw(ch, &msg_memory, &msg_chain, _no_writers);
+  /* no GCs until msg_chain is registered */
   if (msg) {
     p->place_channel_msg_in_flight = msg_memory;
-    msg = scheme_places_deserialize(msg, msg_memory);
-    p->place_channel_msg_in_flight = NULL;
+    p->place_channel_msg_chain_in_flight = msg_chain;
+    log_received_msg(msg, msg_memory);
+    msg = places_deserialize(msg, msg_memory, p);
   }
   END_ESCAPEABLE();
   return msg;
@@ -3587,8 +3607,7 @@ static Scheme_Object *place_channel_finish_ready(void *d, int argc, struct Schem
   msg = *(Scheme_Object **)d;
 
   BEGIN_ESCAPEABLE(cleanup_msg_memmory, p);
-  msg = scheme_places_deserialize(msg, p->place_channel_msg_in_flight);
-  p->place_channel_msg_in_flight = NULL;
+  msg = places_deserialize(msg, p->place_channel_msg_in_flight, p);
   END_ESCAPEABLE();
 
   return msg;
@@ -3598,7 +3617,7 @@ static int place_channel_ready(Scheme_Object *so, Scheme_Schedule_Info *sinfo) {
   Scheme_Place_Bi_Channel *ch;
   Scheme_Object *msg = NULL;
   Scheme_Object *wrapper;
-  void *msg_memory = NULL;
+  GC_CAN_IGNORE void *msg_memory = NULL, *msg_chain = NULL;
   int no_writers = 0;
 
   if (SAME_TYPE(SCHEME_TYPE(so), scheme_place_type)) {
@@ -3609,10 +3628,16 @@ static int place_channel_ready(Scheme_Object *so, Scheme_Schedule_Info *sinfo) {
   }
 
   msg = place_async_try_receive_raw((Scheme_Place_Async_Channel *) ch->link->recvch, 
-                                    &msg_memory, &no_writers);
+                                    &msg_memory, &msg_chain, &no_writers);
+  /* no GCs until msg_chain is registered */
   if (msg != NULL) {
     Scheme_Object **msg_holder;
     Scheme_Thread *p = ((Syncing *)(sinfo->current_syncing))->thread;
+
+    p->place_channel_msg_in_flight = msg_memory;
+    p->place_channel_msg_chain_in_flight = msg_chain;
+
+    log_received_msg(msg, msg_memory);
 
     /* Hold `msg' in atomic memory, because we're not allowed to hold onto
        it beyond release of msg_memory, and `wrapper' and the result
@@ -3620,7 +3645,6 @@ static int place_channel_ready(Scheme_Object *so, Scheme_Schedule_Info *sinfo) {
     msg_holder = (Scheme_Object **)scheme_malloc_atomic(sizeof(Scheme_Object*));
     *msg_holder = msg;
 
-    p->place_channel_msg_in_flight = msg_memory;
     wrapper = scheme_make_closed_prim(place_channel_finish_ready, msg_holder);
     scheme_set_sync_target(sinfo, scheme_void, wrapper, NULL, 0, 0, NULL);
 

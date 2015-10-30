@@ -6,7 +6,6 @@
          (only-in racket/list split-at)
          (for-syntax scheme/base)
          (prefix-in m: mzlib/match)
-         (only-in srfi/13 string-contains)
          rackunit)
 
 (define-syntax (comp stx)
@@ -200,6 +199,26 @@
    (comp '(x y z)
          (match '(1 x 2 y 3 z)
            [(list-no-order 1 2 3 rest ...) rest]
+           [_ 'no]))
+
+   (comp '(x y z)
+         (match '(1 x 2 y 3 z)
+           [(list-no-order 1 2 3 rest ..1) rest]
+           [_ 'no]))
+
+   (comp '(x y z)
+         (match '(1 x 2 y 3 z)
+           [(list-no-order 1 2 3 rest ..2) rest]
+           [_ 'no]))
+
+   (comp '(x y z)
+         (match '(1 x 2 y 3 z)
+           [(list-no-order 1 2 3 rest ..3) rest]
+           [_ 'no]))
+
+   (comp 'no
+         (match '(1 x 2 y 3 z)
+           [(list-no-order 1 2 3 rest ..4) rest]
            [_ 'no]))
 
    (comp
@@ -782,5 +801,13 @@
      (check-equal? (match 42
                      [(foo) x])
                    42))
+
+   (test-case "ordering"
+     (define b (box #t))
+     (check-equal?
+      (match b
+        [(and x (? (λ _ (set-box! b #f))) (app unbox #f)) 'yes]
+        [_ 'no])
+      'yes))
    
 ))

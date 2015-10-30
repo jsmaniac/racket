@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 2000-2001 Matthew Flatt
 
     This library is free software; you can redistribute it and/or
@@ -7041,7 +7041,7 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
   LOG_EXPAND_DECLS;
 
   if (!rec[drec].comp) {
-    SCHEME_EXPAND_OBSERVE_PRIM_MODULE(rec[drec].observer);
+    SCHEME_EXPAND_OBSERVE_PRIM_MODULE(env->observer);
     if (rec[drec].depth > 0)
       rec[drec].depth++;
   }
@@ -7205,7 +7205,9 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
     m->super_bxs_info = super_bxs_info;
   }
 
-  SCHEME_EXPAND_OBSERVE_PREPARE_ENV(rec[drec].observer);
+  if (!rec[drec].comp) {
+    SCHEME_EXPAND_OBSERVE_PREPARE_ENV(env->observer);
+  }
 
   /* load the module for the initial require */
   if (iidx) {
@@ -7291,6 +7293,7 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
     else
       benv = scheme_new_expand_env(menv, env->insp, frame_scopes,
                                    SCHEME_MODULE_BEGIN_FRAME | SCHEME_KEEP_SCOPES_FRAME);
+    benv->observer = env->observer;
   }
 
   /* If fm isn't a single expression, it certainly needs a
@@ -7307,8 +7310,10 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
 
   fm = scheme_datum_to_syntax(fm, form, mb_ctx, 0, 2);
 
-  if (check_mb) {
-    SCHEME_EXPAND_OBSERVE_TAG(rec[drec].observer, fm);
+  if (!rec[drec].comp) {
+    if (check_mb) {
+      SCHEME_EXPAND_OBSERVE_TAG(env->observer, fm);
+    }
   }
 
   fm = scheme_stx_property(fm, module_name_symbol, scheme_resolved_module_path_value(rmp));
@@ -7321,7 +7326,9 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
 
   fm = scheme_stx_add_module_frame_context(fm, rn_set);
 
-  SCHEME_EXPAND_OBSERVE_RENAME_ONE(rec[drec].observer, fm);
+  if (!rec[drec].comp) {
+    SCHEME_EXPAND_OBSERVE_RENAME_ONE(env->observer, fm);
+  }
 
   if (!check_mb) {
     fm = scheme_check_immediate_macro(fm, benv, rec, drec, &mbval, 1);
@@ -7333,8 +7340,10 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
       fm = scheme_make_pair(mb, scheme_make_pair(fm, scheme_null));
       fm = scheme_datum_to_syntax(fm, form, mb_ctx, 0, 2);
       fm = scheme_stx_property(fm, module_name_symbol, scheme_resolved_module_path_value(rmp));
-      
-      SCHEME_EXPAND_OBSERVE_TAG(rec[drec].observer, fm);
+
+      if (!rec[drec].comp) {
+        SCHEME_EXPAND_OBSERVE_TAG(env->observer, fm);
+      }
 
       check_mb = 1;
     }
@@ -7451,7 +7460,9 @@ static Scheme_Object *do_module(Scheme_Object *form, Scheme_Comp_Env *env,
 
   LOG_END_EXPAND(m);
 
-  SCHEME_EXPAND_OBSERVE_RENAME_ONE(rec[drec].observer, fm);
+  if (!rec[drec].comp) {
+    SCHEME_EXPAND_OBSERVE_RENAME_ONE(env->observer, fm);
+  }
   return fm;
 }
 
@@ -7572,8 +7583,8 @@ static void check_require_name(Scheme_Object *id, Scheme_Object *self_modidx,
 
   if (!scheme_hash_get(required, SCHEME_STX_VAL(id))) {
     /* no mapping so far means that we haven't imported anything
-       with this name so far, and we'll be able to use a symbol a
-       sumbol as a key; see require_binding_to_key() */
+       with this name so far, and we'll be able to use a symbol
+       as a key; see require_binding_to_key() */
     binding = SCHEME_STX_VAL(id);
   } else {
     /* Look for import collisions by checking whether `id` has a binding;
@@ -7601,7 +7612,7 @@ static void check_require_name(Scheme_Object *id, Scheme_Object *self_modidx,
       } else {
         binding = require_binding_to_key(required, binding, SCHEME_STX_VAL(id));
         if (scheme_hash_get(required, binding)) {
-          /* use error report below */
+          /* use error report or override below */
         } else {
           /* identifier has a binding in some context, but not within the current module */
           binding = NULL;
@@ -7658,7 +7669,9 @@ static void check_require_name(Scheme_Object *id, Scheme_Object *self_modidx,
     if (SCHEME_TRUEP(SCHEME_VEC_ELS(vec)[7])
         && prep_required_id(vec)
         && scheme_stx_bound_eq(SCHEME_VEC_ELS(vec)[6], id, phase)) {
-      /* can override; construct overriding `binding` */
+      /* can override; first, remove old binding mapping: */
+      scheme_hash_set(required, binding, NULL);
+      /* construct overriding `binding`: */
       binding = scheme_make_vector(4, NULL);
       vec = scheme_module_resolve(modidx, 0);
       SCHEME_VEC_ELS(binding)[0] = vec;
@@ -7939,7 +7952,7 @@ static Scheme_Object *add_lifted_defn(Scheme_Object *data, Scheme_Object **_ids,
   
     id = introduce_to_module_context(id, rn);
 
-    name = scheme_global_binding(id, env->genv);
+    name = scheme_global_binding(id, env->genv, 0);
 
     /* Create the bucket, indicating that the name will be defined: */
     scheme_add_global_symbol(name, scheme_undefined, env->genv);
@@ -8178,8 +8191,10 @@ static Scheme_Object *do_module_begin(Scheme_Object *orig_form, Scheme_Comp_Env 
      scoped identifiers for definitions. */
   form = introduce_to_module_context(form, rn_set);
 
-  observer = rec[drec].observer;
-  SCHEME_EXPAND_OBSERVE_RENAME_ONE(observer, form);
+  observer = env->observer;
+  if (!rec[drec].comp) {
+    SCHEME_EXPAND_OBSERVE_RENAME_ONE(observer, form);
+  }
 
   _num_phases = MALLOC_ONE_ATOMIC(int);
   *_num_phases = 0;
@@ -8226,8 +8241,6 @@ static Scheme_Object *do_module_begin(Scheme_Object *orig_form, Scheme_Comp_Env 
     crec.dont_mark_local_use = 0;
     crec.resolve_module_ids = 0;
     crec.substitute_bindings = 1;
-    crec.value_name = scheme_false;
-    crec.observer = NULL;
     crec.pre_unwrapped = 0;
     crec.env_already = 0;
     crec.comp_flags = rec[drec].comp_flags;
@@ -8433,7 +8446,9 @@ static Scheme_Object *do_module_begin(Scheme_Object *orig_form, Scheme_Comp_Env 
     env->genv->module->dummy = dummy;
   }
 
-  SCHEME_EXPAND_OBSERVE_NEXT(observer);
+  if (!rec[drec].comp) {
+    SCHEME_EXPAND_OBSERVE_NEXT(observer);
+  }
 
   /* Submodules */
   if (has_submodules) {
@@ -8563,6 +8578,83 @@ static Scheme_Object *revert_use_site_scopes_via_context(Scheme_Object *o, Schem
                                                    SCHEME_STX_REMOVE);
 }
 
+static Scheme_Object *handle_submodule_form(const char *who,
+                                            Scheme_Object *e,
+                                            Scheme_Comp_Env *env, int phase,
+                                            Scheme_Object *rn_set, Scheme_Object *observer,
+                                            Module_Begin_Expand_State *bxs,
+                                            Scheme_Compile_Expand_Info *rec, int drec,
+                                            Scheme_Compile_Expand_Info *erec, int derec,
+                                            int *_kind)
+{
+  Scheme_Object *name = NULL, *fst, *p;
+  int is_star;
+
+  fst = SCHEME_STX_CAR(e);
+
+  is_star = scheme_stx_free_eq_x(scheme_modulestar_stx, fst, phase);
+
+  e = revert_use_site_scopes_via_context(e, rn_set, phase);
+
+  if (erec) {
+    SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
+    if (is_star) {
+      SCHEME_EXPAND_OBSERVE_PRIM_SUBMODULE_STAR(observer);
+    } else {
+      SCHEME_EXPAND_OBSERVE_PRIM_SUBMODULE(observer);
+    }
+  }
+
+  if (SCHEME_STX_PAIRP(e)) {
+    p = SCHEME_STX_CDR(e);
+    if (SCHEME_STX_PAIRP(p)) {
+      name = SCHEME_STX_CAR(p);
+      p = SCHEME_STX_CDR(p);
+      if (!SCHEME_STX_SYMBOLP(name)
+          || !SCHEME_STX_PAIRP(p)) {
+        name = NULL;
+      }
+    }
+  }
+  if (!name) {
+    scheme_wrong_syntax(who, NULL, e, NULL);
+  }
+
+  if (!bxs->submodule_names) {
+    Scheme_Hash_Table *smn;
+    smn = scheme_make_hash_table(SCHEME_hash_ptr);
+    bxs->submodule_names = smn;
+  }
+  if (scheme_hash_get(bxs->submodule_names, SCHEME_STX_VAL(name))) {
+    scheme_wrong_syntax(who, name, fst, "duplicate submodule definition");
+  }
+  scheme_hash_set(bxs->submodule_names,
+                  SCHEME_STX_VAL(name),
+                  is_star ? scheme_void : scheme_true);
+
+  if (!is_star) {
+    p = expand_submodules(erec ? erec : rec, erec ? derec :drec, env, 
+                          scheme_make_pair(scheme_make_pair(e, scheme_make_integer(phase)), scheme_null), 0, 
+                          bxs, !!erec);
+    if (erec)
+      e = SCHEME_CAR(p);
+    else
+      e = NULL;
+    *_kind = DONE_MODFORM_KIND;
+  } else {
+    p = scheme_make_pair(scheme_make_pair(e, scheme_make_integer(phase)), 
+                         bxs->saved_submodules);
+    bxs->saved_submodules = p;
+    *_kind = MODULE_MODFORM_KIND;
+  }
+
+  if (erec) {
+    SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer,e);
+  }
+
+  return e;
+}
+
 static Scheme_Object *do_module_begin_k(void)
 {
   Scheme_Thread *p = scheme_current_thread;
@@ -8619,20 +8711,14 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
     void **args;
 
     if (rec) {
-      recx = MALLOC_ONE_RT(Scheme_Compile_Expand_Info);
+      recx = MALLOC_ONE_ATOMIC(Scheme_Compile_Expand_Info);
       memcpy(recx, rec + drec, sizeof(Scheme_Compile_Expand_Info));
-#ifdef MZTAG_REQUIRED
-      recx->type = scheme_rt_compile_info;
-#endif
     } else
       recx = NULL;
     
     if (erec) {
-      erecx = MALLOC_ONE_RT(Scheme_Compile_Expand_Info);
+      erecx = MALLOC_ONE_ATOMIC(Scheme_Compile_Expand_Info);
       memcpy(erecx, erec + derec, sizeof(Scheme_Compile_Expand_Info));
-#ifdef MZTAG_REQUIRED
-      erecx->type = scheme_rt_compile_info;
-#endif
     } else
       erecx = NULL;
 
@@ -8740,11 +8826,8 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
   /* For syntax-local-context, etc., in a d-s RHS: */
   rhs_env = scheme_new_comp_env(env->genv, env->insp, NULL, SCHEME_TOPLEVEL_FRAME);
 
-  if (erec) {
-    observer = erec[derec].observer;
-  } else {
-    observer = NULL;
-  }
+  observer = env->observer;
+  rhs_env->observer = observer;
 
   maybe_has_lifts = 0;
   lift_ctx = scheme_generate_lifts_key();
@@ -8773,7 +8856,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
     while (1) {
       Scheme_Object *fst;
 
-      SCHEME_EXPAND_OBSERVE_NEXT(observer);
+      if (erec) {
+        SCHEME_EXPAND_OBSERVE_NEXT(observer);
+      }
 
       e = SCHEME_STX_CAR(fm);
 
@@ -8784,15 +8869,13 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
                 ? scheme_frame_get_provide_lifts(xenv)
                 : scheme_null);
       scheme_frame_captures_lifts(xenv, scheme_make_lifted_defn, scheme_sys_wraps(xenv), 
-                                  p, lift_ctx, req_data, prev_p);
+                                  p, lift_ctx, req_data, prev_p, scheme_void);
       maybe_has_lifts = 1;
 
       {
 	Scheme_Expand_Info erec1;
 	erec1.comp = 0;
 	erec1.depth = -1;
-	erec1.value_name = scheme_false;
-        erec1.observer = observer;
         erec1.pre_unwrapped = 0;
         erec1.substitute_bindings = 1;
         erec1.env_already = 0;
@@ -8819,9 +8902,13 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
         e = introduce_to_module_context(e, rn_set);
         fm = scheme_named_map_1(NULL, introduce_to_module_context, fm, rn_set);
         fm = scheme_make_pair(e, fm);
-        SCHEME_EXPAND_OBSERVE_RENAME_LIST(observer, fm);
+        if (erec) {
+          SCHEME_EXPAND_OBSERVE_RENAME_LIST(observer, fm);
+        }
 	fm = scheme_append(fst, fm);
-        SCHEME_EXPAND_OBSERVE_MODULE_LIFT_LOOP(observer, fst);
+        if (erec) {
+          SCHEME_EXPAND_OBSERVE_MODULE_LIFT_LOOP(observer, fst);
+        }
       } else {
 	/* No definition lifts added... */
 	if (SCHEME_STX_PAIRP(e))
@@ -8832,9 +8919,13 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	if (fst && SCHEME_STX_SYMBOLP(fst) && scheme_stx_free_eq_x(scheme_begin_stx, fst, phase)) {
 	  fm = SCHEME_STX_CDR(fm);
 	  e = introduce_to_module_context(e, rn_set);
-          SCHEME_EXPAND_OBSERVE_RENAME_ONE(observer, e);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_RENAME_ONE(observer, e);
+          }
 	  fm = scheme_flatten_begin(e, fm);
-	  SCHEME_EXPAND_OBSERVE_SPLICE(observer, fm);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_SPLICE(observer, fm);
+          }
 	  if (SCHEME_STX_NULLP(fm)) {
             e = scheme_frame_get_provide_lifts(xenv);
             e = scheme_reverse(e);
@@ -8848,7 +8939,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
               fm = e;
             if (SCHEME_NULLP(fm) && expand_ends)
               fm = get_higher_phase_lifts(bxs, begin_for_syntax_stx);
-            SCHEME_EXPAND_OBSERVE_MODULE_LIFT_END_LOOP(observer, fm);
+            if (erec) {
+              SCHEME_EXPAND_OBSERVE_MODULE_LIFT_END_LOOP(observer, fm);
+            }
             if (SCHEME_NULLP(fm)) {
               e = NULL;
               break;
@@ -8862,7 +8955,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 
     e = introduce_to_module_context(e, rn_set);
 
-    SCHEME_EXPAND_OBSERVE_RENAME_ONE(observer, e);
+    if (erec) {
+      SCHEME_EXPAND_OBSERVE_RENAME_ONE(observer, e);
+    }
 
     if (SCHEME_STX_PAIRP(e)) {
       Scheme_Object *fst;
@@ -8875,8 +8970,10 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	  Scheme_Object *vars, *val;
           int var_count = 0;
 
-          SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
-          SCHEME_EXPAND_OBSERVE_PRIM_DEFINE_VALUES(observer);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
+            SCHEME_EXPAND_OBSERVE_PRIM_DEFINE_VALUES(observer);
+          }
 
 	  /* Create top-level vars; uses revert_use_site_scopes() on the vars */
 	  scheme_define_parse(e, &vars, &val, 0, xenv, 1);
@@ -8906,7 +9003,7 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
             }
 
             /* Generate symbol for this binding: */
-            name = scheme_global_binding(name, env->genv);
+            name = scheme_global_binding(name, env->genv, 0);
 
 	    /* Create the bucket, indicating that the name will be defined: */
 	    scheme_add_global_symbol(name, scheme_undefined, env->genv);
@@ -8932,7 +9029,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
                                        e, e, 0, 2);
           }
           
-          SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+          }
 	  kind = DEFN_MODFORM_KIND;
         } else if (scheme_stx_free_eq_x(scheme_define_syntaxes_stx, fst, phase)
                    || scheme_stx_free_eq_x(scheme_begin_for_syntax_stx, fst, phase)) {
@@ -8948,19 +9047,23 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	  int for_stx;
           int max_let_depth;
 
-          e = revert_use_site_scopes_via_context(e, rn_set, phase);
-
 	  for_stx = scheme_stx_free_eq_x(scheme_begin_for_syntax_stx, fst, phase);
 
-          SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
+          }
 
           if (for_stx) {
-            SCHEME_EXPAND_OBSERVE_PRIM_BEGIN_FOR_SYNTAX(observer);
+            if (erec) {
+              SCHEME_EXPAND_OBSERVE_PRIM_BEGIN_FOR_SYNTAX(observer);
+            }
             if (scheme_stx_proper_list_length(e) < 0)
               scheme_wrong_syntax(NULL, NULL, e, NULL);
             code = e;
           } else {
-            SCHEME_EXPAND_OBSERVE_PRIM_DEFINE_SYNTAXES(observer);
+            if (erec) {
+              SCHEME_EXPAND_OBSERVE_PRIM_DEFINE_SYNTAXES(observer);
+            }
             scheme_define_parse(e, &names, &code, 1, env, 1);
           }
 
@@ -8969,7 +9072,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
           else
             boundname = scheme_false;
 
-          SCHEME_EXPAND_OBSERVE_PREPARE_ENV(observer);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_PREPARE_ENV(observer);
+          }
 
 	  scheme_prepare_exp_env(env->genv);
 	  scheme_prepare_compile_env(env->genv->exp_env);
@@ -8978,10 +9083,11 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 
 	  eenv = scheme_new_comp_env(env->genv->exp_env, env->insp,
                                      frame_scopes,
-                                     0);
+                                     SCHEME_KEEP_SCOPES_FRAME);
+          eenv->observer = observer;
           if (!for_stx)
             scheme_frame_captures_lifts(eenv, NULL, NULL, scheme_false, scheme_false, 
-                                        req_data, scheme_false);
+                                        req_data, scheme_false, scheme_false);
 
 	  oenv = env;
 	  
@@ -9013,7 +9119,7 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
               }
 
               /* Generate symbol for this binding: */
-              name = scheme_global_binding(name, env->genv);
+              name = scheme_global_binding(name, env->genv, 0);
 
               if (!SAME_OBJ(SCHEME_STX_VAL(orig_name), name)
                   || !scheme_stx_equal_module_context(orig_name, env->genv->module->rn_stx))
@@ -9034,8 +9140,6 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	  mrec.dont_mark_local_use = 0;
 	  mrec.resolve_module_ids = 0;
           mrec.substitute_bindings = 1;
-	  mrec.value_name = NULL;
-          mrec.observer = NULL;
           mrec.pre_unwrapped = 0;
           mrec.env_already = 0;
           mrec.comp_flags = rec[drec].comp_flags;
@@ -9043,8 +9147,6 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
           if (erec) {
             erec1.comp = 0;
             erec1.depth = -1;
-            erec1.value_name = boundname;
-            erec1.observer = observer;
             erec1.pre_unwrapped = 0;
             erec1.substitute_bindings = 1;
             erec1.env_already = 0;
@@ -9078,9 +9180,14 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
           } else {
             if (erec) {
               SCHEME_EXPAND_OBSERVE_PHASE_UP(observer);
+              eenv->value_name = boundname;
+              eenv->observer = xenv->observer;
               code = scheme_expand_expr_lift_to_let(code, eenv, &erec1, 0);
             }
+            eenv->value_name = boundname;
+            eenv->observer = NULL;
             m = scheme_compile_expr_lift_to_let(code, eenv, &mrec, 0);
+            eenv->value_name = NULL;
           }
 
           if (!for_stx) {
@@ -9145,13 +9252,15 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
               m = SCHEME_STX_CDR(e);
               m = SCHEME_STX_CAR(m);
               m = scheme_make_pair(fst,
-                                   scheme_make_pair(m, scheme_make_pair(code, scheme_null)));
+                                   scheme_make_pair(orig_names, scheme_make_pair(code, scheme_null)));
             }
 	    e = scheme_datum_to_syntax(m, e, e, 0, 2);
 	  } else
             e = NULL;
           
-          SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+          }
 
           kind = DONE_MODFORM_KIND;
 
@@ -9160,8 +9269,10 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
             non_phaseless_form = e;
 	} else if (scheme_stx_free_eq_x(require_stx, fst, phase)) {
 	  /************ require *************/
-          SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
-          SCHEME_EXPAND_OBSERVE_PRIM_REQUIRE(observer);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
+            SCHEME_EXPAND_OBSERVE_PRIM_REQUIRE(observer);
+          }
 
           e = revert_use_site_scopes_via_context(e, rn_set, phase);
 
@@ -9179,7 +9290,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	  if (!erec)
 	    e = NULL;
 
-          SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+          if (erec) {
+            SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+          }
 	  kind = DONE_MODFORM_KIND;
 	} else if (scheme_stx_free_eq_x(provide_stx, fst, phase)) {
 	  /************ provide *************/
@@ -9220,63 +9333,14 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
                    || scheme_stx_free_eq_x(scheme_modulestar_stx, fst, phase)) {
 	  /************ module[*] *************/
           /* check outer syntax & name, then expand pre-module or remember for post-module pass */
-          Scheme_Object *name = NULL;
-          int is_star;
-
-          is_star = scheme_stx_free_eq_x(scheme_modulestar_stx, fst, phase);
-
-          e = revert_use_site_scopes_via_context(e, rn_set, phase);
-
-          SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
-          if (is_star) {
-            SCHEME_EXPAND_OBSERVE_PRIM_SUBMODULE_STAR(observer);
-          } else {
-            SCHEME_EXPAND_OBSERVE_PRIM_SUBMODULE(observer);
-          }
-
-          if (SCHEME_STX_PAIRP(e)) {
-            p = SCHEME_STX_CDR(e);
-            if (SCHEME_STX_PAIRP(p)) {
-              name = SCHEME_STX_CAR(p);
-              p = SCHEME_STX_CDR(p);
-              if (!SCHEME_STX_SYMBOLP(name)
-                  || !SCHEME_STX_PAIRP(p)) {
-                name = NULL;
-              }
-            }
-          }
-          if (!name) {
-            scheme_wrong_syntax(who, NULL, e, NULL);
-          }
-
-          if (!bxs->submodule_names) {
-            Scheme_Hash_Table *smn;
-            smn = scheme_make_hash_table(SCHEME_hash_ptr);
-            bxs->submodule_names = smn;
-          }
-          if (scheme_hash_get(bxs->submodule_names, SCHEME_STX_VAL(name))) {
-            scheme_wrong_syntax(who, name, fst, "duplicate submodule definition");
-          }
-          scheme_hash_set(bxs->submodule_names, 
-                          SCHEME_STX_VAL(name), 
-                          is_star ? scheme_void : scheme_true);
-
-          if (!is_star) {
-            p = expand_submodules(erec ? erec : rec, erec ? derec :drec, env, 
-                                  scheme_make_pair(scheme_make_pair(e, scheme_make_integer(phase)), scheme_null), 0, 
-                                  bxs, !!erec);
-            if (erec)
-              e = SCHEME_CAR(p);
-            else
-              e = NULL;
-            kind = DONE_MODFORM_KIND;
-          } else {
-            p = scheme_make_pair(scheme_make_pair(e, scheme_make_integer(phase)), 
-                                 bxs->saved_submodules);
-            bxs->saved_submodules = p;
-            kind = MODULE_MODFORM_KIND;
-          }
-          SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer,e);
+          int k;
+          e = handle_submodule_form(who,
+                                    e, env, phase,
+                                    rn_set, observer,
+                                    bxs,
+                                    rec, drec, erec, derec,
+                                    &k);
+          kind = k;
 	} else {
 	  kind = EXPR_MODFORM_KIND;
           non_phaseless |= NON_PHASELESS_FORM;
@@ -9321,7 +9385,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
           fm = get_higher_phase_lifts(bxs, begin_for_syntax_stx);
       } else
         fm = e;
-      SCHEME_EXPAND_OBSERVE_MODULE_LIFT_END_LOOP(observer, fm);
+      if (erec) {
+        SCHEME_EXPAND_OBSERVE_MODULE_LIFT_END_LOOP(observer, fm);
+      }
     }
   }
   /* first =  a list of (cons semi-expanded-expression kind) */
@@ -9338,7 +9404,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
   }
 
   /* Pass 2 */
-  SCHEME_EXPAND_OBSERVE_NEXT_GROUP(observer);
+  if (erec) {
+    SCHEME_EXPAND_OBSERVE_NEXT_GROUP(observer);
+  }
   
   {
     /* Module and each `begin-for-syntax' group manages its own prefix: */
@@ -9346,6 +9414,7 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
     frame_scopes = scheme_module_context_frame_scopes(rn_set, xenv->scopes);
     cenv = scheme_new_comp_env(env->genv, env->insp, frame_scopes,
                                SCHEME_TOPLEVEL_FRAME | SCHEME_KEEP_SCOPES_FRAME);
+    cenv->observer = env->observer;
   }
 
   lift_data = scheme_make_vector(3, NULL);
@@ -9365,7 +9434,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
     kind = SCHEME_INT_VAL(SCHEME_CDR(e));
     e = SCHEME_CAR(e);
     
-    SCHEME_EXPAND_OBSERVE_NEXT(observer);
+    if (erec) {
+      SCHEME_EXPAND_OBSERVE_NEXT(observer);
+    }
 
     if (kind == SAVED_MODFORM_KIND) {
       expanded_l = scheme_make_pair(SCHEME_CDR(e), expanded_l);
@@ -9400,7 +9471,7 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
       ll = (maybe_has_lifts 
             ? scheme_frame_get_provide_lifts(cenv) 
             : scheme_null);
-      scheme_frame_captures_lifts(cenv, add_lifted_defn, lift_data, l, lift_ctx, req_data, ll);
+      scheme_frame_captures_lifts(cenv, add_lifted_defn, lift_data, l, lift_ctx, req_data, ll, scheme_void);
       maybe_has_lifts = 1;
 
       if (kind == DEFN_MODFORM_KIND)
@@ -9411,7 +9482,6 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
       if (erec) {
 	Scheme_Expand_Info erec1;
 	scheme_init_expand_recs(erec, derec, &erec1, 1);
-	erec1.value_name = scheme_false;
 	e = scheme_expand_expr(e, nenv, &erec1, 0);
         expanded_l = scheme_make_pair(e, expanded_l);
       }
@@ -9420,7 +9490,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	Scheme_Compile_Info crec1;
 	scheme_init_compile_recs(rec, drec, &crec1, 1);
 	crec1.resolve_module_ids = 0;
+        nenv->observer = NULL;
 	e = scheme_compile_expr(e, nenv, &crec1, 0);
+        nenv->observer = env->observer;
       }
 
       lifted_reqs = scheme_frame_get_require_lifts(cenv);
@@ -9436,8 +9508,11 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 	p = SCHEME_CDR(p);
       } else {
 	/* Lifts - insert them and try again */
+        Scheme_Object *fst;
         *bxs->all_simple_bindings = 0;
-        SCHEME_EXPAND_OBSERVE_MODULE_LIFT_LOOP(observer, scheme_copy_list(l));
+        if (erec) {
+          SCHEME_EXPAND_OBSERVE_MODULE_LIFT_LOOP(observer, scheme_copy_list(l));
+        }
         if (erec) {
           e = scheme_make_pair(scheme_make_pair(e, SCHEME_CAR(expanded_l)),
                                scheme_make_integer(SAVED_MODFORM_KIND)); /* kept both expanded & maybe compiled */
@@ -9447,7 +9522,29 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
           e = scheme_make_pair(e, scheme_make_integer(DONE_MODFORM_KIND)); /* don't re-compile/-expand */
 	SCHEME_CAR(p) = e;
 	for (ll = l; SCHEME_PAIRP(ll); ll = SCHEME_CDR(ll)) {
-	  e = scheme_make_pair(SCHEME_CAR(ll), scheme_make_integer(DEFN_MODFORM_KIND));
+          e = SCHEME_CAR(ll);
+          if (SCHEME_STX_PAIRP(SCHEME_CAR(e)))
+            fst = SCHEME_STX_CAR(SCHEME_CAR(e));
+          else
+            fst = NULL;
+          if (fst
+              && (scheme_stx_free_eq3(fst, scheme_module_stx, scheme_make_integer(phase), scheme_make_integer(0))
+                  || scheme_stx_free_eq3(fst, scheme_modulestar_stx, scheme_make_integer(phase), scheme_make_integer(0)))) {
+            /* a `module` or `module*` form; handle as in first pass */
+            int k;
+            e = handle_submodule_form(who,
+                                      e, env, phase,
+                                      rn_set, observer,
+                                      bxs,
+                                      rec, drec, erec, derec,
+                                      &k);
+            if (e)
+              e = scheme_make_pair(e, scheme_make_integer(k));
+            else
+              e = scheme_make_pair(scheme_void, DONE_MODFORM_KIND);
+          } else {
+            e = scheme_make_pair(e, scheme_make_integer(DEFN_MODFORM_KIND));
+          }
 	  SCHEME_CAR(ll) = e;
 	}
 	p = scheme_append(l, p);
@@ -9481,7 +9578,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
         p = e;
         expr_cnt = 0;
       }
-      SCHEME_EXPAND_OBSERVE_MODULE_LIFT_END_LOOP(observer, p);
+      if (erec) {
+        SCHEME_EXPAND_OBSERVE_MODULE_LIFT_END_LOOP(observer, p);
+      }
       for (ll = p; SCHEME_PAIRP(ll); ll = SCHEME_CDR(ll)) {
         e = SCHEME_CAR(ll);
         if (expr_cnt <= 0) {
@@ -9520,7 +9619,9 @@ static Scheme_Object *do_module_begin_at_phase(Scheme_Object *form, Scheme_Comp_
 
   /* Pass 3 */
   /* if at phase 0, expand provides for all phases */
-  SCHEME_EXPAND_OBSERVE_NEXT_GROUP(observer);
+  if (erec) {
+    SCHEME_EXPAND_OBSERVE_NEXT_GROUP(observer);
+  }
   
   if (phase == 0) {
     Scheme_Object *expanded_provides;
@@ -9610,7 +9711,7 @@ static Scheme_Object *expand_all_provides(Scheme_Object *form,
   Scheme_Object *e, *ex, *fst;
   Scheme_Comp_Env *pcenv;
 
-  observer = rec[drec].observer;
+  observer = cenv->observer;
   
   saved_provides = scheme_reverse(bxs->saved_provides);
   while (!SCHEME_NULLP(saved_provides)) {
@@ -9622,9 +9723,11 @@ static Scheme_Object *expand_all_provides(Scheme_Object *form,
     
     /* Expand and add provides to table: */
     
-    SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
-    SCHEME_EXPAND_OBSERVE_PRIM_PROVIDE(observer);
-      
+    if (!rec[drec].comp) {
+      SCHEME_EXPAND_OBSERVE_ENTER_PRIM(observer, e);
+      SCHEME_EXPAND_OBSERVE_PRIM_PROVIDE(observer);
+    }
+
     ex = e;
 
     if (provide_phase != 0) {
@@ -9637,6 +9740,7 @@ static Scheme_Object *expand_all_provides(Scheme_Object *form,
         pcenv = scheme_new_comp_env(penv, penv->access_insp, NULL, SCHEME_TOPLEVEL_FRAME);
       else
         pcenv = scheme_new_expand_env(penv, penv->access_insp, NULL, SCHEME_TOPLEVEL_FRAME);
+      pcenv->observer = cenv->observer;
     } else {
       pcenv = cenv;
     }
@@ -9653,7 +9757,9 @@ static Scheme_Object *expand_all_provides(Scheme_Object *form,
     if (keep_expanded)
       expanded_provides = scheme_make_pair(ex, expanded_provides);
     
-    SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+    if (!rec[drec].comp) {
+      SCHEME_EXPAND_OBSERVE_EXIT_PRIM(observer, e);
+    }
     
     saved_provides = SCHEME_CDR(saved_provides);
   }
@@ -9681,10 +9787,14 @@ static Scheme_Object *expand_submodules(Scheme_Compile_Expand_Info *rec, int dre
 
   while (!SCHEME_NULLP(l)) {
     mod = SCHEME_CAR(l);
-    SCHEME_EXPAND_OBSERVE_ENTER_PRIM(rec[drec].observer,SCHEME_CAR(mod));
+    if (!rec[drec].comp) {
+      SCHEME_EXPAND_OBSERVE_ENTER_PRIM(env->observer, SCHEME_CAR(mod));
+    }
     mod = do_module(SCHEME_CAR(mod), env, rec, drec, ancestry, env->genv->module->submodule_path, post,
                     bxs, SCHEME_CDR(mod));
-    SCHEME_EXPAND_OBSERVE_EXIT_PRIM(rec[drec].observer,mod);
+    if (!rec[drec].comp) {
+      SCHEME_EXPAND_OBSERVE_EXIT_PRIM(env->observer,mod);
+    }
 
     mods = scheme_make_pair(mod, mods);
 
@@ -9904,7 +10014,7 @@ module_begin_syntax(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Compile_In
 static Scheme_Object *
 module_begin_expand(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Expand_Info *erec, int drec)
 {
-  SCHEME_EXPAND_OBSERVE_PRIM_MODULE_BEGIN(erec[drec].observer);
+  SCHEME_EXPAND_OBSERVE_PRIM_MODULE_BEGIN(env->observer);
   return do_module_begin(form, env, erec, drec);
 }
 
@@ -10617,6 +10727,9 @@ void compute_provide_arrays(Scheme_Hash_Table *all_provided, Scheme_Hash_Table *
          having a consistent provide arrays. */
       qsort_provides(exs, exsns, exss, exps, exets, exsnoms, 0, exvcount, 1);
 
+      /* Sort syntax, too, for deterministic output */
+      qsort_provides(exs, exsns, exss, exps, exets, exsnoms, exvcount, excount-exvcount, 0);
+
       pt->num_provides = excount;
       pt->num_var_provides = exvcount;
       pt->provides = exs;
@@ -10796,7 +10909,6 @@ static Scheme_Object *expand_provide(Scheme_Object *e, int at_phase,
                             stop, xenv, 0);
 
   scheme_init_expand_recs(rec, drec, &erec1, 1);
-  erec1.value_name = scheme_false;
   erec1.depth = -1;
 
   p = scheme_current_thread;
@@ -11814,7 +11926,7 @@ void add_single_require(Scheme_Module_Exports *me, /* from module */
             modname = scheme_module_resolve(modidx, 1);
             menv = scheme_module_access(modname, orig_env, 0);
             val = scheme_lookup_in_table(menv->toplevel, (char *)exsns[j]);
-            b = scheme_global_bucket(scheme_global_binding(iname, orig_env), orig_env);
+            b = scheme_global_bucket(scheme_global_binding(iname, orig_env, 0), orig_env);
             scheme_set_global_bucket(((copy_vars == 2)
                                       ? "namespace-require/constant"
                                       : "namespace-require/copy"),
@@ -11888,7 +12000,8 @@ void scheme_do_module_context_unmarshal(Scheme_Object *modidx, Scheme_Object *re
                                         Scheme_Object *bind_phase, Scheme_Object *pt_phase, Scheme_Object *src_phase,
                                         Scheme_Object *prefix, /* a sybmol; not included in `excepts` keys */
                                         Scheme_Hash_Tree *excepts, /* NULL => empty */
-                                        Scheme_Hash_Table *export_registry, Scheme_Object *insp_desc,
+                                        Scheme_Hash_Table *export_registry,
+                                        Scheme_Object *insp_desc, Scheme_Object *req_insp_desc,
                                         Scheme_Object *replace_at)
 {
   Scheme_Object *name;
@@ -11935,7 +12048,7 @@ void scheme_do_module_context_unmarshal(Scheme_Object *modidx, Scheme_Object *re
   if (pt) {
     if (!pt->src_modidx && me->src_modidx)
       pt->src_modidx = me->src_modidx;
-    scheme_extend_module_context_with_shared(scheme_make_pair(bind_phase, insp_desc),
+    scheme_extend_module_context_with_shared(scheme_make_pair(bind_phase, req_insp_desc),
                                              req_modidx, pt,
                                              prefix, excepts,
                                              src_phase, context,
@@ -12468,12 +12581,14 @@ static Scheme_Object *check_require_form(Scheme_Env *env, Scheme_Object *form)
 }
 
 static Scheme_Object *
-do_require_execute(Scheme_Env *env, Scheme_Object *form)
+do_require_execute(Scheme_Env *env, Scheme_Object *form, int to_context)
 {
   Scheme_Object *modidx;
 
-  /* Use the current top-level context: */
-  form = scheme_stx_add_module_context(form, env->stx_context);
+  if (to_context) {
+    /* Use the current top-level context: */
+    form = scheme_stx_from_generic_to_module_context(form, env->stx_context);
+  }
 
   /* Check for collisions again, in case there's a difference between
      compile and run times: */
@@ -12495,7 +12610,8 @@ Scheme_Object *
 scheme_top_level_require_execute(Scheme_Object *data)
 {
   do_require_execute(scheme_environment_from_dummy(SCHEME_PTR1_VAL(data)),
-                     SCHEME_PTR2_VAL(data));
+                     SCHEME_PTR2_VAL(data),
+                     1);
   return scheme_void;
 }
 
@@ -12519,7 +12635,7 @@ static Scheme_Object *do_require(Scheme_Object *form, Scheme_Comp_Env *env,
 
   if (rec && rec[drec].comp) {
     /* Remove all context specific to the compile-time environment: */
-    form = scheme_stx_remove_module_context(form, env->genv->stx_context);
+    form = scheme_stx_from_module_context_to_generic(form, env->genv->stx_context);
 
     /* Dummy lets us access a top-level environment: */
     dummy = scheme_make_environment_dummy(env);
@@ -12546,7 +12662,7 @@ require_syntax(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Compile_Info *r
 static Scheme_Object *
 require_expand(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Expand_Info *erec, int drec)
 {
-  SCHEME_EXPAND_OBSERVE_PRIM_REQUIRE(erec[drec].observer);
+  SCHEME_EXPAND_OBSERVE_PRIM_REQUIRE(env->observer);
   return do_require(form, env, erec, drec);
 }
 
@@ -12561,7 +12677,7 @@ Scheme_Object *scheme_toplevel_require_for_expand(Scheme_Object *module_path,
 
   form = scheme_revert_use_site_scopes(form, cenv);
 
-  do_require_execute(cenv->genv, form);
+  do_require_execute(cenv->genv, form, 0);
 
   return form;
 }
@@ -12580,7 +12696,7 @@ provide_syntax(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Compile_Info *r
 static Scheme_Object *
 provide_expand(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Expand_Info *erec, int drec)
 {
-  SCHEME_EXPAND_OBSERVE_PRIM_PROVIDE(erec[drec].observer);
+  SCHEME_EXPAND_OBSERVE_PRIM_PROVIDE(env->observer);
   scheme_wrong_syntax(NULL, NULL, form, "not in module body");
   return NULL;
 }
@@ -12595,7 +12711,7 @@ declare_syntax(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Compile_Info *r
 static Scheme_Object *
 declare_expand(Scheme_Object *form, Scheme_Comp_Env *env, Scheme_Expand_Info *erec, int drec)
 {
-  SCHEME_EXPAND_OBSERVE_PRIM_PROVIDE(erec[drec].observer);
+  SCHEME_EXPAND_OBSERVE_PRIM_PROVIDE(env->observer);
   scheme_wrong_syntax(NULL, NULL, form, "not in module body");
   return NULL;
 }

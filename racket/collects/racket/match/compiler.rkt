@@ -11,21 +11,34 @@
 
 (provide compile*)
 
+;; should we reorder stuff?
+(define can-reorder? (make-parameter #t))
+
 ;; for non-linear patterns
 (define vars-seen (make-parameter null))
 
 (define (hash-on f elems #:equal? [eql #t])
-  (define-values (ht ref set!)
+  (define-values (ht h-ref h-set!)
     (case eql
       [(#t) (values (make-hash) hash-ref hash-set!)]
       [(#f) (values (make-hasheq) hash-ref hash-set!)]))
+  (define keys null)
   ;; put all the elements e in the ht, indexed by (f e)
   (for ([r
          ;; they need to be in the original order when they come out
          (reverse elems)])
     (define k (f r))
-    (set! ht k (cons r (ref ht k (lambda () null)))))
-  ht)
+    (h-set! ht k (cons r (h-ref ht k (lambda ()
+                                       (set! keys (cons k keys))
+                                       null)))))
+  ;; Return a list, instead of a hash, to make order deterministic
+  ;; based on the recorded order of keys
+  (for/list ([k (in-list keys)])
+    (cons k (hash-ref ht k))))
+
+;; Like `hash-map`, bu for a list produced by `hash-on`:
+(define (hash-on-map ht-l f)
+  (map (lambda (p) (f (car p) (cdr p))) ht-l))
 
 ;; generate a clause of kind k
 ;; for rows rows, with matched variable x and rest variable xs
@@ -74,7 +87,7 @@
      (let ([ht (hash-on (lambda (r)
                           (length (Vector-ps (Row-first-pat r)))) rows)])
        (with-syntax ([(clauses ...)
-                      (hash-map
+                      (hash-on-map
                        ht
                        (lambda (arity rows)
                          (define ns (build-list arity values))
@@ -123,7 +136,7 @@
     [(Exact? first)
      (let ([ht (hash-on (compose Exact-v Row-first-pat) block #:equal? #t)])
        (with-syntax ([(clauses ...)
-                      (hash-map
+                      (hash-on-map
                        ht
                        (lambda (k v)
                          #`[(equal? #,x '#,k)
@@ -188,7 +201,7 @@
      (let ;; put all the rows in the hash, indexed by their constructor
          ([ht (hash-on (lambda (r) (pat-key (Row-first-pat r))) block)])
        (with-syntax ([(clauses ...)
-                      (hash-map
+                      (hash-on-map
                        ht (lambda (k v) (gen-clause k v x xs esc)))])
          #`(cond clauses ... [else (#,esc)])))]
     ;; the Or rule
@@ -221,7 +234,8 @@
                                                         #f
                                                         seen))
                                             qs)
-                                       #'esc*)])
+                                       #'esc*
+                                       #f)])
                ;; then compile the rest of the row
                (if success?
                    #,(compile* xs
@@ -229,7 +243,8 @@
                                                (Row-rhs row)
                                                (Row-unmatch row)
                                                (append (map cons vars vars) seen)))
-                               esc)
+                               esc
+                               #f)
                    (#,esc))))))]
     ;; the App rule
     [(App? first)
@@ -298,7 +313,7 @@
      ;; we use the pattern so that it can have a custom equal+hash
      (define ht (hash-on (lambda (r) (Row-first-pat r)) block #:equal? #t))
      (with-syntax ([(clauses ...)
-                    (hash-map
+                    (hash-on-map
                      ht (lambda (k v)
                           (gen-clause (Pred-pred k) v x xs esc)))])
        #`(cond clauses ... [else (#,esc)]))]
@@ -416,7 +431,7 @@
                              #'failkv))))))]
     [else (error 'compile "unsupported pattern: ~a\n" first)]))
 
-(define (compile* vars rows esc [reorder? #t])
+(define (compile* vars rows esc [reorder? (can-reorder?)])
   (define (let/wrap clauses body)
     (if (stx-null? clauses)
       body
@@ -459,7 +474,10 @@
     ;; and compile each block with a reference to its continuation
    [else
     (let*-values
-        ([(rows vars) (if reorder?
+        ([(rows vars) (if (and (>= 1 (length vars))
+                               reorder?
+                               ;; moving Or patterns early breaks Typed Racket
+                               (not (ormap Or? (apply append (map Row-pats rows)))))
                           (reorder-columns rows vars)
                           (values rows vars))]
          [(fns)
@@ -471,7 +489,9 @@
                               [(f) (generate-temporaries #'(f))]
                               ;; compile the block, with jumps to the previous
                               ;; esc
-                              [c (compile-one vars (car blocks) esc)])
+                              [c 
+                               (parameterize ([can-reorder? reorder?])
+                                 (compile-one vars (car blocks) esc))])
                   ;; then compile the rest, with our name as the esc
                   (loop (cdr blocks)
                         #'f

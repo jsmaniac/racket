@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 1995-2001 Matthew Flatt
 
     This library is free software; you can redistribute it and/or
@@ -114,6 +114,7 @@ static Scheme_Object *local_lift_expr(int argc, Scheme_Object *argv[]);
 static Scheme_Object *local_lift_exprs(int argc, Scheme_Object *argv[]);
 static Scheme_Object *local_lift_context(int argc, Scheme_Object *argv[]);
 static Scheme_Object *local_lift_end_statement(int argc, Scheme_Object *argv[]);
+static Scheme_Object *local_lift_module(int argc, Scheme_Object *argv[]);
 static Scheme_Object *local_lift_require(int argc, Scheme_Object *argv[]);
 static Scheme_Object *local_lift_provide(int argc, Scheme_Object *argv[]);
 static Scheme_Object *make_introducer(int argc, Scheme_Object *argv[]);
@@ -706,6 +707,7 @@ static void make_kernel_env(void)
   MZTIMEIT(numcomp, scheme_init_numcomp(env));
   MZTIMEIT(numstr, scheme_init_numstr(env));
   MZTIMEIT(bignum, scheme_init_bignum());
+  MZTIMEIT(char-const, scheme_init_char_constants());
   MZTIMEIT(stx, scheme_init_stx(env));
   MZTIMEIT(module, scheme_init_module(env));
   MZTIMEIT(port, scheme_init_port(env));
@@ -804,6 +806,7 @@ static void make_kernel_env(void)
   GLOBAL_PRIM_W_ARITY("syntax-local-lift-values-expression", local_lift_exprs, 2, 2, env);
   GLOBAL_PRIM_W_ARITY("syntax-local-lift-context", local_lift_context, 0, 0, env);
   GLOBAL_PRIM_W_ARITY("syntax-local-lift-module-end-declaration", local_lift_end_statement, 1, 1, env);
+  GLOBAL_PRIM_W_ARITY("syntax-local-lift-module", local_lift_module, 1, 1, env);
   GLOBAL_PRIM_W_ARITY("syntax-local-lift-require", local_lift_require, 2, 2, env);
   GLOBAL_PRIM_W_ARITY("syntax-local-lift-provide", local_lift_provide, 1, 1, env);
 
@@ -999,6 +1002,7 @@ scheme_new_module_env(Scheme_Env *env, Scheme_Module *m,
 
   menv->module = m;
   menv->instance_env = env;
+  menv->reader_env = (env->reader_env ? env->reader_env : env);
 
   if (new_exp_module_tree) {
     /* It would be nice to share the label env with `env`, but we need
@@ -1065,6 +1069,7 @@ void scheme_prepare_exp_env(Scheme_Env *env)
     eenv->template_env = env;
     eenv->label_env = env->label_env;
     eenv->instance_env = env->instance_env;
+    eenv->reader_env = (env->reader_env ? env->reader_env : env);
 
     scheme_prepare_env_stx_context(env);
     mc = scheme_module_context_at_phase(env->stx_context, scheme_env_phase(eenv));
@@ -1113,6 +1118,7 @@ void scheme_prepare_template_env(Scheme_Env *env)
     eenv->exp_env = env;       
     eenv->label_env = env->label_env;
     eenv->instance_env = env->instance_env;
+    eenv->reader_env = (env->reader_env ? env->reader_env : env);
 
     if (env->disallow_unbound)
       eenv->disallow_unbound = env->disallow_unbound;
@@ -1149,6 +1155,7 @@ void scheme_prepare_label_env(Scheme_Env *env)
     lenv->label_env = lenv;
     lenv->template_env = lenv;
     lenv->instance_env = env->instance_env;
+    lenv->reader_env = (env->reader_env ? env->reader_env : env);
   }
 }
 
@@ -1276,6 +1283,7 @@ Scheme_Env *scheme_copy_module_env(Scheme_Env *menv, Scheme_Env *ns, Scheme_Obje
    
   scheme_prepare_label_env(ns);
   menv2->label_env = ns->label_env;
+  menv2->reader_env = (ns->reader_env ? ns->reader_env : ns);
 
   return menv2;
 }
@@ -1605,6 +1613,65 @@ void scheme_shadow(Scheme_Env *env, Scheme_Object *n, Scheme_Object *val, int as
     scheme_add_binding_copy(id, scheme_rename_transformer_id(val), scheme_env_phase(env));
 }
 
+static void install_one_binding_name(Scheme_Hash_Table *bt, Scheme_Object *name, Scheme_Object *id, Scheme_Env *benv)
+{
+  if (SCHEME_SYMBOLP(name) && SCHEME_STX_SYMBOLP(id)) {
+    if (benv->stx_context)
+      id = scheme_stx_push_introduce_module_context(id, benv->stx_context);
+    scheme_hash_set(bt, name, id);
+  }
+}
+
+void scheme_install_binding_names(Scheme_Object *binding_namess, Scheme_Env *env)
+/* binding_namess has a per-phase mapping of symbosl to identifier, recorded
+   when `define` and `define-syntaxes` forms were compiled at the top level;
+   install the symbol-to-identifier mapping that was recorded during compilation
+   into the current namespace */
+{
+  Scheme_Env *benv;
+  Scheme_Object *sym, *id, *table;
+  Scheme_Hash_Tree *ht;
+  Scheme_Hash_Table *bt;
+  intptr_t i, phase;
+
+  if (!binding_namess) return;
+
+  while (SCHEME_PAIRP(binding_namess)) {
+    table = SCHEME_CAR(binding_namess);
+    if (!SCHEME_PAIRP(table))
+      return;
+    phase = SCHEME_INT_VAL(SCHEME_CAR(table));
+    table = SCHEME_CDR(table);
+
+    if (phase < 0)
+      return;
+
+    benv = env;
+    while (phase > 0) {
+      scheme_prepare_exp_env(benv);
+      benv = benv->exp_env;
+      phase--;
+    }
+
+    bt = scheme_get_binding_names_table(benv);
+
+    if (SCHEME_HASHTRP(table)) {
+      ht = (Scheme_Hash_Tree *)table;
+      i = -1;
+      while ((i = scheme_hash_tree_next(ht, i)) != -1) {
+        scheme_hash_tree_index(ht, i, &sym, &id);
+        install_one_binding_name(bt, sym, id, benv);
+      }
+    } else if (SCHEME_VECTORP(table)) {
+      for (i = SCHEME_VEC_SIZE(table) >> 1; i--; ) {
+        install_one_binding_name(bt, SCHEME_VEC_ELS(table)[2*i], SCHEME_VEC_ELS(table)[2*i+1], benv);
+      }
+    }
+
+    binding_namess = SCHEME_CDR(binding_namess);
+  }
+}
+
 /********** Auxilliary tables **********/
 
 Scheme_Object **scheme_make_builtin_references_table(int *_unsafe_start)
@@ -1909,7 +1976,7 @@ namespace_set_variable_value(int argc, Scheme_Object *argv[])
       id = scheme_datum_to_syntax(argv[0], scheme_false, scheme_false, 0, 0);
       scheme_prepare_env_stx_context(env);
       id = scheme_stx_add_module_context(id, env->stx_context);
-      (void)scheme_global_binding(id, env);
+      (void)scheme_global_binding(id, env, 0);
     }
     scheme_shadow(env, argv[0], argv[1], 1);
   }
@@ -2765,6 +2832,25 @@ local_lift_end_statement(int argc, Scheme_Object *argv[])
     not_currently_transforming("syntax-local-lift-module-end-declaration");
 
   return scheme_local_lift_end_statement(expr, local_scope, env);
+}
+
+static Scheme_Object *
+local_lift_module(int argc, Scheme_Object *argv[])
+{
+  Scheme_Comp_Env *env;
+  Scheme_Object *local_scope, *expr;
+
+  expr = argv[0];
+  if (!SCHEME_STXP(expr))
+    scheme_wrong_contract("syntax-local-lift-module", "syntax?", 0, argc, argv);
+
+  env = scheme_current_thread->current_local_env;
+  local_scope = scheme_current_thread->current_local_scope;
+
+  if (!env)
+    not_currently_transforming("syntax-local-lift-module");
+
+  return scheme_local_lift_module(expr, local_scope, env);
 }
 
 static Scheme_Object *local_lift_require(int argc, Scheme_Object *argv[])

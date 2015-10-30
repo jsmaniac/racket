@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 2000-2001 Matthew Flatt
 
     This library is free software; you can redistribute it and/or
@@ -4991,7 +4991,7 @@ static Scheme_Object *wr_abs_directory_p(int argc, Scheme_Object **argv)
     Scheme_Object *a, *d, *r;
     a = abs_directory_p("current-write-relative-directory", SCHEME_CAR(argv[0]));
     d = abs_directory_p("current-write-relative-directory", SCHEME_CDR(argv[0]));
-    r = scheme_extract_relative_to(a, d);
+    r = scheme_extract_relative_to(a, d, NULL);
     if (SAME_OBJ(a, r)) {
       scheme_contract_error("current-write-relative-directory",
                             "first path does not extend second path",

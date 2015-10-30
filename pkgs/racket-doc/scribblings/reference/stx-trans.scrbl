@@ -181,8 +181,9 @@ A @tech{structure type property} to identify structure types that act
 as @tech{rename transformers} like the ones created by
 @racket[make-rename-transformer].
 
-The property value must be an exact integer or an identifier
-@tech{syntax object}. In the former case, the integer designates a
+The property value must be an exact integer, an identifier
+@tech{syntax object}, or a procedure that takes one argument.
+In the former case, the integer designates a
 field within the structure that should contain an identifier; the
 integer must be between @racket[0] (inclusive) and the number of
 non-automatic fields in the structure type (exclusive, not counting
@@ -194,10 +195,38 @@ target for renaming, just like the first argument to
 @racket[make-rename-transformer]. If the property value is an integer,
 the target identifier is extracted from the structure instance; if the
 field value is not an identifier, then an identifier @racketidfont{?}
-with an empty context is used, instead.}
+with an empty context is used, instead.
+
+If the property value is a procedure that takes one argument, then the procedure
+is called to obtain the identifier that the rename transformer will use
+as a target identifier. If the procedure returns any value that is not
+an identifier, the @racket[exn:fail:contract] exception is raised.
+
+@examples[#:eval stx-eval #:escape UNSYNTAX
+  (code:comment "Example of a procedure argument for prop:rename-transformer")
+  (define-syntax slv-1 'first-transformer-binding)
+  (define-syntax slv-2 'second-transformer-binding)
+  (begin-for-syntax
+    (struct slv-cooperator (redirect-to-first?)
+      #:property prop:rename-transformer
+      (λ (inst)
+        (if (slv-cooperator-redirect-to-first? inst)
+            #'slv-1
+            #'slv-2))))
+  (define-syntax (slv-lookup stx)
+    (syntax-case stx ()
+      [(_ id)
+       #`(quote #,(syntax-local-value #'id))]))
+  (define-syntax slv-inst-1 (slv-cooperator #t))
+  (define-syntax slv-inst-2 (slv-cooperator #f))
+  (slv-lookup slv-inst-1)
+  (slv-lookup slv-inst-2)
+]
+
+@history[#:changed "6.3" "the property now accepts a procedure of one argument."]}
 
 
-@defproc[(local-expand [stx syntax?]
+@defproc[(local-expand [stx any/c]
                        [context-v (or/c 'expression 'top-level 'module 'module-begin list?)]
                        [stop-ids (or/c (listof identifier?) #f)]
                        [intdef-ctx (or/c internal-definition-context? 
@@ -211,7 +240,9 @@ Expands @racket[stx] in the lexical context of the expression
 currently being expanded. The @racket[context-v] argument is used as
 the result of @racket[syntax-local-context] for immediate expansions;
 a list indicates an @tech{internal-definition context}, and more
-information on the form of the list is below.
+information on the form of the list is below. If @racket[stx] is not
+already a @tech{syntax object}, it is coerced with
+@racket[(datum->syntax #f stx)] before expansion.
 
 When an identifier in @racket[stop-ids] is encountered by the expander
 in a sub-expression, expansions stops for the sub-expression. If
@@ -297,7 +328,7 @@ generated value onto that list.
                                    an explicit wrapper.}]}
 
 
-@defproc[(syntax-local-expand-expression [stx syntax?])
+@defproc[(syntax-local-expand-expression [stx any/c])
          (values syntax? syntax?)]{
 
 Like @racket[local-expand] given @racket['expression] and an empty
@@ -316,7 +347,7 @@ avoids quadratic expansion times when local expansions are nested.
 @transform-time[]}
 
 
-@defproc[(local-transformer-expand [stx syntax?]
+@defproc[(local-transformer-expand [stx any/c]
                        [context-v (or/c 'expression 'top-level list?)]
                        [stop-ids (or/c (listof identifier?) #f)]
                        [intdef-ctx (or/c internal-definition-context? #f) #f])
@@ -331,7 +362,7 @@ lifted expressions---from calls to
 result.}
 
 
-@defproc[(local-expand/capture-lifts [stx syntax?]
+@defproc[(local-expand/capture-lifts [stx any/c]
                        [context-v (or/c 'expression 'top-level 'module 'module-begin list?)]
                        [stop-ids (or/c (listof identifier?) #f)]
                        [intdef-ctx (or/c internal-definition-context? #f) #f]
@@ -346,10 +377,15 @@ forms, and the expansion of @racket[stx] is the last expression in the
 @racket[begin]. The @racket[lift-ctx] value is reported by
 @racket[syntax-local-lift-context] during local expansion. The lifted
 expressions are not expanded, but instead left as provided in the
-@racket[begin] form.}
+@racket[begin] form.
+
+If @racket[context-v] is @racket['top-level] or @racket['module], then
+@racket[module] forms can appear in the result as added via
+@racket[syntax-local-lift-module]. If @racket[context-v] is
+@racket['module], then @racket[module*] forms can appear, too.}
 
 
-@defproc[(local-transformer-expand/capture-lifts [stx syntax?]
+@defproc[(local-transformer-expand/capture-lifts [stx any/c]
                        [context-v (or/c 'expression 'top-level list?)]
                        [stop-ids (or/c (listof identifier?) #f)]
                        [intdef-ctx (or/c internal-definition-context? #f) #f]
@@ -451,6 +487,48 @@ provided for backward compatibility; the more general
 @racket[internal-definition-context-introduce] function is preferred.
 
 @history[#:changed "6.3" @elem{Simplified the operation to @tech{scope} removal.}]}
+
+
+@defthing[prop:expansion-contexts struct-type-property?]{
+
+A @tech{structure type property} to constrain the use of macro
+@tech{transformers} and @tech{rename transformers}. The property's
+value must be a list of symbols, where the allowed symbols are
+@racket['expression], @racket['top-level], @racket['module],
+@racket['module-begin], and @racket['definition-context]. Each symbol
+corresponds to an expansion context in the same way as for
+@racket[local-expand] or as reported by @racket[syntax-local-context],
+except that @racket['definition-context] is used (instead of a list)
+to represent an @tech{internal-definition context}.
+
+If an identifier is bound to a transformer whose list does not include
+a symbol for a particular use of the identifier, then the use is
+adjusted as follows:
+@;
+@itemlist[
+
+ @item{In a @racket['module-begin] context, then the use is wrapped in
+       a @racket[begin] form.}
+
+ @item{In a @racket['module], @racket['top-level],
+       @racket['internal-definition] or context, if
+       @racket['expression] is present in the list, then the use is
+       wrapped in an @racket[#%expression] form.}
+
+ @item{Otherwise, a syntax error is reported.}
+
+]
+
+The @racket[prop:expansion-contexts] property is most useful in
+combination with @racket[prop:rename-transformer], since a general
+@tech{transformer} procedure can use @racket[syntax-local-context].
+Furthermore, a @racket[prop:expansion-contexts] property makes the
+most sense when a @tech{rename transformer}'s identifier has the
+@racket['not-free-identifier=?] property, otherwise a definition of
+the binding creates a binding alias that effectively routes around the
+@racket[prop:expansion-contexts] property.
+
+@history[#:added "6.3"]}
 
 
 @defproc[(syntax-local-value [id-stx syntax?]
@@ -576,6 +654,28 @@ for caching lift information to avoid redundant lifts.
 @transform-time[]}
 
 
+@defproc[(syntax-local-lift-module [stx syntax?])
+         void?]{
+
+Cooperates with the @racket[module] form or top-level expansion to add
+@racket[stx] as a module declaration in the enclosing module or top-level.
+The @racket[stx] form must start with @racket[module] or @racket[module*],
+where the latter is only allowed within the expansion of a module.
+
+The module is not immediately declared when
+@racket[syntax-local-lift-module] returns. Instead, the module
+declaration is recorded for processing when expansion returns to the
+enclosing module body or top-level sequence.
+
+@transform-time[] If the current expression being transformed is not
+within a @racket[module] form or within a top-level expansion, then
+the @exnraise[exn:fail:contract]. If @racket[stx] form does start with
+@racket[module] or @racket[module*], or if it starts with @racket[module*]
+in a top-level context, the @exnraise[exn:fail:contract].
+
+@history[#:added "6.3"]}
+
+
 @defproc[(syntax-local-lift-module-end-declaration [stx syntax?])
          void?]{
 
@@ -601,7 +701,7 @@ then the @exnraise[exn:fail:contract].}
 Lifts a @racket[#%require] form corresponding to
 @racket[raw-require-spec] (either as a @tech{syntax object} or datum)
 to the top-level or to the top of the module currently being expanded
- or to an enclosing @racket[begin-for-syntax]..
+ or to an enclosing @racket[begin-for-syntax].
 
 The resulting syntax object is the same as @racket[stx], except that a
 fresh @tech{scope} is added. The same @tech{scope} is
@@ -876,7 +976,7 @@ identifiers.  Each list of identifiers includes all bindings imported
 (into the module being expanded) using the module path
 @racket[mod-path], or all modules if @racket[mod-path] is
 @racket[#f]. The association list includes all identifiers imported
-with a @racket[phase-level] shift, of all shifts if
+with a @racket[phase-level] shift, or all shifts if
 @racket[phase-level] is @racket[#t].
 
 When an identifier is renamed on import, the result association list

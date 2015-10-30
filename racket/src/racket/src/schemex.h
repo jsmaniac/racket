@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 1995-2001 Matthew Flatt
   All rights reserved.
 
@@ -320,7 +320,6 @@ void *(*GC_malloc_atomic)(size_t size_in_bytes);
 void *(*GC_malloc_one_tagged)(size_t size_in_bytes);
 void *(*GC_malloc_atomic_uncollectable)(size_t size_in_bytes);
 void *(*scheme_malloc_uncollectable)(size_t size_in_bytes);
-void *(*GC_malloc_array_tagged)(size_t size_in_bytes);
 void *(*GC_malloc_allow_interior)(size_t size_in_bytes);
 void *(*GC_malloc_atomic_allow_interior)(size_t size_in_bytes);
 void *(*GC_malloc_tagged_allow_interior)(size_t size_in_bytes);
@@ -371,7 +370,7 @@ void **GC_variable_stack;
 void (*GC_register_traversers)(short tag, Size_Proc size, Mark_Proc mark, Fixup_Proc fixup,
 				      int is_constant_size, int is_atomic);
 void *(*GC_resolve)(void *p);
-void (*GC_mark)(const void *p);
+void (*GC_mark)(void *p);
 void (*GC_fixup)(void *p);
 void *(*GC_fixup_self)(void *p);
 #endif

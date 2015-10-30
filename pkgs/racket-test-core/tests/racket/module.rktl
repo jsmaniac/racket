@@ -1430,6 +1430,54 @@ case of module-leve bindings; it doesn't cover local bindings.
 
 (test #t syntax? (expand-syntax (expand lifted-require-of-submodule)))
 
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check module lifting
+
+(module module-lift-example-1 racket/base
+  (require (for-syntax racket/base))
+  (define-syntax (m stx)
+    (syntax-local-lift-module
+     #'(module m racket/base
+         (provide x)
+         (define x 10)))
+    #'(begin
+        (require 'm)
+        (define out x)
+        (provide out)))
+  (m))
+
+(test 10 dynamic-require ''module-lift-example-1 'out)
+
+(module module-lift-example-2 racket/base
+  (require (for-syntax racket/base))
+  (define-syntax (m stx)
+    (syntax-local-lift-module #'(module* sub #f
+                                  (provide s)
+                                  (define s (add1 a))))
+    #'(void))
+  (m)
+  (define a 1))
+
+(test 2 dynamic-require '(submod 'module-lift-example-2 sub) 's)
+
+
+(module module-lift-example-3 racket/base
+  (require (for-syntax racket/base))
+  (define-syntax (m stx)
+    (syntax-local-lift-module #'(module m racket/base
+                                  (provide x)
+                                  (define x 11)))
+    (syntax-local-lift-module-end-declaration
+     #'(let ()
+         (local-require (submod "." m))
+         (set! out x)))
+    #'(void))
+  (define out -10)
+  (m)
+  (provide out))
+
+(test 11 dynamic-require ''module-lift-example-3 'out)
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check addition of 'disappeared-use by `provide`
 
@@ -1505,6 +1553,76 @@ case of module-leve bindings; it doesn't cover local bindings.
 (module starts-phase-2-without-any-content racket
   (begin-for-syntax
     (begin-for-syntax)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure `eval-syntax` doesn't create a fallback context
+
+(module exports-cons-with-context racket/base
+  (provide cons-id)
+  (define cons-id #'cons))
+(require 'exports-cons-with-context racket/base)
+
+(let ([mod (datum->syntax #f `(,#'module m racket/base
+                               ;; If a fallback is installed, then
+                               ;; the module context of `cons` applies:
+                               ,cons-id))])
+  (err/rt-test (eval-syntax mod)
+               (lambda (exn) (regexp-match #rx"ambiguous" (exn-message exn)))))
+
+;; `eval` should install a fallback for a non`-module` form:
+(test (void) eval (datum->syntax #f `(begin (,#'module m racket/base
+                                              ,cons-id))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module shadows-a-racket-base-binding-and-exports racket/base
+  (provide (all-defined-out)) ; exports `path?`
+  (struct path ()))
+
+(module import-shadows-a-racket-base-binding racket/base
+  (require 'shadows-a-racket-base-binding-and-exports)
+  (provide (all-from-out racket/base)))
+
+;; Fails because imported module doesn't provide `path?`:
+(syntax-test #'(module m racket/base
+                 (require (rename-in 'import-shadows-a-racket-base-binding
+                                     [path? other-path?]))))
+
+(module import-shadows-a-racket-base-binding-and-doesnt-confuse-struct-out racket/base
+  (require 'shadows-a-racket-base-binding-and-exports)
+  (provide (struct-out path)))
+
+(module shadows-a-racket-base-binding-and-exports-all racket/base
+  (provide (all-from-out racket/base)) ; does not export `path?`
+  (struct path ()))
+
+(syntax-test #'(module m racket/base
+                 (require (rename-in 'shadows-a-racket-base-binding-and-exports-all
+                                     [path? other-path?]))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check `syntax-local-lift-require` on an
+;; spec that doesn't have the target environment's
+;; context:
+
+(module has-a-submodule-that-exports-x racket
+  (module b racket/base
+    (define x 1)
+    (provide x))
+
+  (define-syntax (lifted-require-of-x stx)
+    (syntax-case stx ()
+      [(_ mod)
+       (let ([x (car (generate-temporaries '(x)))])
+         (syntax-local-lift-require
+          #`(rename mod #,x x)
+          x))]))
+
+  (provide lifted-require-of-x))
+
+(require 'has-a-submodule-that-exports-x)
+
+(test 1 values (lifted-require-of-x (submod 'has-a-submodule-that-exports-x b)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

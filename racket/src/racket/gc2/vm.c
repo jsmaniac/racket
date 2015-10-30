@@ -28,10 +28,11 @@ enum {
 
 #ifdef USE_BLOCK_CACHE
 # define USE_ALLOC_CACHE
-# define QUEUED_MPROTECT_IS_PROMISCUOUS 1
+# define QUEUED_MPROTECT_INFECTS_SMALL 1
 #else
-# define QUEUED_MPROTECT_IS_PROMISCUOUS 0
+# define QUEUED_MPROTECT_INFECTS_SMALL 0
 #endif
+#define QUEUED_MPROTECT_INFECTS_MED 0
 
 /* Either USE_ALLOC_CACHE or OS_ALLOCATOR_NEEDS_ALIGNMENT must be
    enabled, unless the lower-level allocator's alignment matches
@@ -200,10 +201,14 @@ static int mmu_should_compact_page(MMU *mmu, void **src_block) {
   return 0;
 }
 
-static void mmu_write_unprotect_page(MMU *mmu, void *p, size_t len) {
+static void mmu_write_unprotect_page(MMU *mmu, void *p, size_t len, int type, void **src_block) {
   mmu_assert_os_page_aligned(mmu, (size_t)p);
   mmu_assert_os_page_aligned(mmu, len);
+#ifdef USE_BLOCK_CACHE
+  block_cache_protect_one_page(mmu->block_cache, p, len, type, 1, src_block);
+#else
   os_protect_pages(p, len, 1);
+#endif
 }
 
 static void mmu_queue_protect_range(MMU *mmu, void *p, size_t len, int type, int writeable, void **src_block) {

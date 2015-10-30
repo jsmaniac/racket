@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2014 PLT Design Inc.
+  Copyright (c) 2004-2015 PLT Design Inc.
   Copyright (c) 1995-2001 Matthew Flatt
   All rights reserved.
 
@@ -412,7 +412,6 @@ MZ_EXTERN void *GC_malloc_atomic(size_t size_in_bytes);
 MZ_EXTERN void *GC_malloc_one_tagged(size_t size_in_bytes);
 MZ_EXTERN void *GC_malloc_atomic_uncollectable(size_t size_in_bytes);
 MZ_EXTERN void *scheme_malloc_uncollectable(size_t size_in_bytes);
-MZ_EXTERN void *GC_malloc_array_tagged(size_t size_in_bytes);
 MZ_EXTERN void *GC_malloc_allow_interior(size_t size_in_bytes);
 MZ_EXTERN void *GC_malloc_atomic_allow_interior(size_t size_in_bytes);
 MZ_EXTERN void *GC_malloc_tagged_allow_interior(size_t size_in_bytes);
@@ -473,7 +472,7 @@ MZ_EXTERN void **GC_variable_stack;
 MZ_EXTERN void GC_register_traversers(short tag, Size_Proc size, Mark_Proc mark, Fixup_Proc fixup,
 				      int is_constant_size, int is_atomic);
 MZ_EXTERN void *GC_resolve(void *p);
-MZ_EXTERN void GC_mark(const void *p);
+MZ_EXTERN void GC_mark(void *p);
 MZ_EXTERN void GC_fixup(void *p);
 MZ_EXTERN void *GC_fixup_self(void *p);
 #endif

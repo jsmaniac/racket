@@ -597,6 +597,97 @@
 ;; ----------------------------------------
 
 (let ()
+  (define (go contexts
+              wrap
+              prop:macro
+              #:sub? [sub? #f]
+              #:trim-error [error-rx #f])
+    (define o (open-output-bytes))
+    (define e (open-output-bytes))
+    (parameterize ([current-output-port o]
+                   [current-error-port e]
+                   [current-namespace (make-base-namespace)])
+      (call-with-continuation-prompt
+       (lambda ()
+         (eval
+          `(module m racket/base
+            (require (for-syntax racket/base))
+            
+            (define v 0)
+            
+            (begin-for-syntax
+              (struct e (p)
+                      #:property ,prop:macro ,(if (eq? prop:macro 'prop:procedure)
+                                                  0
+                                                  (list #'quote-syntax
+                                                        (syntax-property #'v
+                                                                         'not-free-identifier=?
+                                                                         #t)))
+                      #:property prop:expansion-contexts ',contexts))
+            
+            (define-syntax m (e (lambda (stx)
+                                  (displayln (syntax-local-context))
+                                  #'10)))
+            
+            ,(wrap 'm)))
+         (dynamic-require (if sub? '(submod 'm sub) ''m) #f))))
+    (list (get-output-string o)
+          (if error-rx
+              (let ([m (regexp-match error-rx (get-output-string e))])
+                (or (and m (car m))
+                    (get-output-string e)))
+              (get-output-string e))))
+  
+  (test '("module\n10\n" "") go '(module expression) list 'prop:procedure)
+  (test '("module\n10\n" "") go '(module expression) values 'prop:procedure)
+  (test '("expression\n10\n" "") go '(expression) list 'prop:procedure)
+  (test '("expression\n10\n" "") go '(expression) values 'prop:procedure)
+  (test '("" "m: not allowed in context\n  expansion context: module") go '() values 'prop:procedure
+        #:trim-error #rx"^[^\n]*\n[^\n]*")
+  (test '("0\n" "") go '(module expression) values 'prop:rename-transformer)
+  (test '("" "application: not a procedure") go '(module expression) list 'prop:rename-transformer
+        #:trim-error #rx"^[^;]*")
+  (test '("0\n" "") go '(expression) values 'prop:rename-transformer)
+  (test '("" "application: not a procedure") go '(expression) list 'prop:rename-transformer
+        #:trim-error #rx"^[^;]*")  
+  (test '("" "m: not allowed in context\n  expansion context: module") go '() values 'prop:rename-transformer
+        #:trim-error #rx"^[^\n]*\n[^\n]*")
+  
+  (define (in-submodule s) `(module* sub #f ,s))
+  (test '("module-begin\n10\n" "") go '(module-begin expression) in-submodule 'prop:procedure #:sub? #t)
+  (test '("module-begin\n10\n" "") go '(module-begin) in-submodule 'prop:procedure #:sub? #t)
+  (test '("module\n10\n" "") go '(module expression) in-submodule 'prop:procedure #:sub? #t)
+  (test '("module\n10\n" "") go '(module) in-submodule 'prop:procedure #:sub? #t)
+  (test '("expression\n10\n" "") go '(expression) in-submodule 'prop:procedure #:sub? #t)
+  (test '("" "m: not allowed in context\n  expansion context: module") go '() in-submodule 'prop:procedure
+        #:trim-error #rx"^[^\n]*\n[^\n]*")
+  (test '("0\n" "") go '(module-begin expression) in-submodule 'prop:rename-transformer #:sub? #t)
+  (test '("0\n" "") go '(module-begin) in-submodule 'prop:rename-transformer #:sub? #t)
+  (test '("0\n" "") go '(module expression) in-submodule 'prop:rename-transformer #:sub? #t)
+  (test '("0\n" "") go '(module) in-submodule 'prop:rename-transformer #:sub? #t)
+  (test '("0\n" "") go '(expression) in-submodule 'prop:rename-transformer #:sub? #t)
+  (test '("" "m: not allowed in context\n  expansion context: module") go '() in-submodule 'prop:rename-transformer
+        #:trim-error #rx"^[^\n]*\n[^\n]*")
+  
+  (define (in-defctx s) `(let () ,s))
+  (test '("(#(struct:liberal-define-context))\n10\n" "") go '(definition-context expression) in-defctx 'prop:procedure)
+  (test '("(#(struct:liberal-define-context))\n10\n" "") go '(definition-context) in-defctx 'prop:procedure)
+  (test '("expression\n10\n" "") go '(expression) in-defctx 'prop:procedure)
+  (test '("" "m: not allowed in context\n  expansion context: definition-context") go '() in-defctx 'prop:procedure
+        #:trim-error #rx"^[^\n]*\n[^\n]*")
+  (test '("0\n" "") go '(definition-context expression) in-defctx 'prop:rename-transformer)
+  (test '("0\n" "") go '(definition-context) in-defctx 'prop:rename-transformer)
+  (test '("0\n" "") go '(expression) in-defctx 'prop:rename-transformer)
+  (test '("" "m: not allowed in context\n  expansion context: definition-context") go '() in-defctx 'prop:rename-transformer
+        #:trim-error #rx"^[^\n]*\n[^\n]*")
+  
+  (void))
+  
+  
+
+;; ----------------------------------------
+
+(let ()
   (define-syntax (foo stx)
     (define context (syntax-local-make-definition-context))
     (with-handlers ([exn:fail:contract? (lambda (x) #''ok)])
@@ -1019,6 +1110,66 @@
     (eval `(require 'm)))
   (test "2\n" get-output-string o))
 
+(parameterize ([current-namespace (make-base-namespace)])
+  (eval `(module m racket/base
+           (require (for-syntax racket/base))
+           (define x 10)
+           (let-syntax ([x (syntax-local-lift-module #'(module m racket/base 
+                                                         (provide x)
+                                                         (define x 10)))])
+             (void))))
+  (test 10 eval `(dynamic-require '(submod 'm m) 'x)))
+
+;; ----------------------------------------
+;; Check module lifting in a top-level context
+
+(define-syntax (do-lift-example-1 stx)
+  (syntax-local-lift-module
+   #'(module lift-example-1 racket/base
+       (provide x)
+       (define x 10)))
+  #'(void))
+(do-lift-example-1)
+(test 10 dynamic-require ''lift-example-1 'x)
+
+(test '(begin
+        (module lift-example-1 racket/base
+          (provide x)
+          (define x 10))
+        (#%app void))
+      'local-expand/capture-lifts
+      (let-syntax ([quote-local-expand
+                    (lambda (stx)
+                      (syntax-case stx ()
+                        [(_ e)
+                         #`(quote #,(local-expand/capture-lifts #'e 'top-level null))]))])
+        (quote-local-expand (do-lift-example-1))))
+
+(define-syntax (do-lift-example-1* stx)
+  (syntax-local-lift-module
+   #'(module* lift-example-1* racket/base
+       (provide x)
+       (define x 10)))
+  #'(void))
+
+(err/rt-test (expand '(do-lift-example-1*))
+             (lambda (exn)
+               (and (exn:fail:contract? exn)
+                    (regexp-match #rx"cannot lift.*module[*]" (exn-message exn)))))
+
+(test '(begin
+        (module* lift-example-1* racket/base
+          (provide x)
+          (define x 10))
+        (#%app void))
+      'local-expand/capture-lifts
+      (let-syntax ([quote-local-expand
+                    (lambda (stx)
+                      (syntax-case stx ()
+                        [(_ e)
+                         #`(quote #,(local-expand/capture-lifts #'e 'module null))]))])
+        (quote-local-expand (do-lift-example-1*))))
+
 ;; ----------------------------------------
 ;; Lifting should not introduce `#%top` around
 ;; the reference to the lifted identifier:
@@ -1257,6 +1408,161 @@
   (begin
     (def)
     (use)))
+
+;; ----------------------------------------
+;; Check `local-expand` argument checking
+
+(let-syntax ([m
+              (lambda (stx)
+                (define (le . args)
+                  (with-handlers ([exn:fail:contract? void])
+                    (apply local-expand args)
+                    (error "fail")))
+                (le #'1 'xpression null)
+                (le #'1 'expression 1)
+                (le #'1 'expression #'1)
+                (le #'1 'expression #'(x))
+                (le #'1 'expression (list 'x))
+                #'#t)])
+  (void (m)))
+
+;; ----------------------------------------
+;; Check that `expand-syntax` attaches the namespace's 
+
+(test 573
+      'expand
+      (parameterize ([current-namespace (make-base-namespace)])
+        (eval '(require (for-syntax racket/base)))
+        (eval '(define-syntax (m stx)
+                (with-syntax ([id (datum->syntax #f 'gen-id)])
+                  #`(begin
+                      (define id 573)
+                      id))))
+        (define stx (namespace-syntax-introduce (datum->syntax #f '(m))))
+        (syntax-case (expand-syntax-to-top-form stx) (begin)
+          [(begin a b)
+           (begin
+             (eval-syntax #'a)
+             (eval-syntax (expand-syntax #'b)))])))
+
+;; ----------------------------------------
+;; Check that use-site scopes are not pruned too eagerly
+;;  (based on examples from Brian Mastenbrook)
+
+(module should-be-inner-1 racket/base
+  (define x 'outer)
+  
+  (define-syntax-rule (def-m m given-x)
+    (define-syntax-rule (m d)
+      (begin
+        (define given-x 'inner)
+        (define d x))))
+  
+  (def-m m x)
+  (m d)
+  (provide d))
+
+(test 'inner dynamic-require ''should-be-inner-1 'd)
+
+(module should-be-inner-2 racket/base
+  (define x 'outer)
+  
+  (define d
+    (let ()
+      (define-syntax-rule (def-m m given-x)
+        (define-syntax-rule (m)
+          (begin
+            (define given-x 'inner)
+            x)))
+      
+      (def-m m x)
+      (m)))
+  
+  (provide d))
+
+(test 'inner dynamic-require ''should-be-inner-2 'd)
+
+(module should-be-outer-1 racket/base
+  (define x 'outer)
+  
+  (define-syntax-rule (def-m m given-x)
+    (define-syntax-rule (m d)
+      (define d
+        (let ()
+          (define given-x 'inner)
+          x))))
+  
+  (def-m m x)
+  (m d)
+  (provide d))
+
+(test 'outer dynamic-require ''should-be-outer-1 'd)
+
+(module should-be-outer-2 racket/base
+  (define x 'outer)
+  
+  (define-syntax-rule (def-m m given-x)
+    (define-syntax-rule (m)
+      (begin
+        (define given-x 'inner)
+        x)))
+  
+  (define d
+    (let ()
+      (def-m m x)
+      (m)))
+  
+  (provide d))
+
+(test 'outer dynamic-require ''should-be-outer-2 'd)
+
+(module should-be-outer-3 racket/base
+  (define x 'outer)
+  
+  (define-syntax-rule (def-m m given-x)
+    (define-syntax-rule (m)
+      (begin
+        (define given-x 'inner)
+        x)))
+  
+  (def-m m x)
+  (define d
+    (let ()
+      (m)))
+  
+  (provide d))
+
+(test 'outer dynamic-require ''should-be-outer-3 'd)
+
+(module should-be-outer-4 racket/base
+  (define x 'outer)
+  
+  (define d
+    (let ()
+      (define-syntax-rule (def-m m given-x)
+        (define-syntax-rule (m)
+          (begin
+            (define given-x 'inner)
+            x)))
+      
+      (def-m m x)
+      (let ()
+        (m))))
+  
+  (provide d))
+
+(test 'outer dynamic-require ''should-be-outer-4 'd)
+
+;; ----------------------------------------
+;; Check that taint check precedes bound-with-binding substitution:
+
+(err/rt-test (expand '(let ([x 1])
+                       (let-syntax ([m (lambda (stx)
+                                         #`(list #,(syntax-taint #'x)))])
+                         (m))))
+             (lambda (exn)
+               (regexp-match? #rx"cannot use identifier tainted by macro transformation"
+                              (exn-message exn))))
 
 ;; ----------------------------------------
 

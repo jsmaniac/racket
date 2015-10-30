@@ -170,7 +170,14 @@ See also @racket[make-custom-hash].}
 
 Like @racket[make-hash], @racket[make-hasheq], and
 @racket[make-hasheqv], but creates a mutable hash table that holds
-keys weakly.}
+keys weakly.
+
+Beware that values in the table are retained normally. If a value in
+the table refers back to its key, then the table will retain the value
+and therefore the key; the mapping will never be removed from the
+table even if the key becomes otherwise inaccessible. To avoid that
+problem, instead of mapping the key to the value, map the key to an
+@tech{ephemeron} that pairs the key and value.}
 
 @deftogether[(
 @defproc[(make-immutable-hash [assocs (listof pair?) null])
@@ -235,8 +242,9 @@ later mappings overwrite earlier mappings.
 
 @defproc[(hash-ref [hash hash?]
                    [key any/c]
-                   [failure-result any/c (lambda () 
-                                           (raise (make-exn:fail:contract ....)))])
+                   [failure-result (failure-result/c any/c)
+                                   (lambda ()
+                                     (raise (make-exn:fail:contract ....)))])
          any]{
 
 Returns the value for @racket[key] in @racket[hash]. If no value
@@ -277,8 +285,9 @@ Returns @racket[#t] if @racket[hash] contains a value for the given
 @defproc[(hash-update! [hash (and/c hash? (not/c immutable?))]
                        [key any/c]
                        [updater (any/c . -> . any/c)]
-                       [failure-result any/c (lambda () 
-                                               (raise (make-exn:fail:contract ....)))])
+                       [failure-result (failure-result/c any/c)
+                                       (lambda ()
+                                         (raise (make-exn:fail:contract ....)))])
          void?]{
 
 Composes @racket[hash-ref] and @racket[hash-set!] to update an
@@ -293,8 +302,9 @@ concurrent updates.
 @defproc[(hash-update [hash (and/c hash? immutable?)]
                       [key any/c]
                       [updater (any/c . -> . any/c)]
-                      [failure-result any/c (lambda () 
-                                              (raise (make-exn:fail:contract ....)))])
+                      [failure-result (failure-result/c any/c)
+                                      (lambda ()
+                                        (raise (make-exn:fail:contract ....)))])
           (and/c hash? immutable?)]{
 
 Composes @racket[hash-ref] and @racket[hash-set] to functionally
@@ -355,13 +365,15 @@ procedure and mutability of @racket[hash].}
 
 
 @defproc[(hash-map [hash hash?]
-                   [proc (any/c any/c . -> . any/c)])
+                   [proc (any/c any/c . -> . any/c)]
+                   [try-order? any/c #f])
          (listof any/c)]{
 
 Applies the procedure @racket[proc] to each element in
 @racket[hash] in an unspecified order, accumulating the results
 into a list. The procedure @racket[proc] is called each time with a
-key and its value.
+key and its value, and the procedure's individual results appear in
+order in the result list.
 
 If a hash table is extended with new keys (either through
 @racket[proc] or by another thread) while a @racket[hash-map] or
@@ -372,7 +384,14 @@ change does not affect a traversal if the key has been seen already,
 otherwise the traversal skips a deleted key or uses the remapped key's
 new value.
 
-@see-also-concurrency-caveat[]}
+If @racket[try-order?] is true, then the order of keys and values
+passed to @racket[proc] is normalized under certain circumstances,
+such as when the keys are all symbols and @racket[hash] is not an
+@tech{impersonator}.
+
+@see-also-concurrency-caveat[]
+
+@history[#:changed "6.3" @elem{Added the @racket[try-order?] argument.}]}
 
 @defproc[(hash-keys [hash hash?])
          (listof any/c)]{
@@ -396,15 +415,19 @@ See @racket[hash-map] for information about modifying @racket[hash]
 during @racket[hash->list]. @see-also-concurrency-caveat[]}
 
 @defproc[(hash-for-each [hash hash?]
-                        [proc (any/c any/c . -> . any)])
+                        [proc (any/c any/c . -> . any)]
+                        [try-order? any/c #f])
          void?]{
 
 Applies @racket[proc] to each element in @racket[hash] (for the
 side-effects of @racket[proc]) in an unspecified order. The procedure
 @racket[proc] is called each time with a key and its value.
 
-See @racket[hash-map] for information about modifying @racket[hash]
-within @racket[proc]. @see-also-concurrency-caveat[]}
+See @racket[hash-map] for information about @racket[try-order?] and
+about modifying @racket[hash] within @racket[proc].
+@see-also-concurrency-caveat[]
+
+@history[#:changed "6.3" @elem{Added the @racket[try-order?] argument.}]}
 
 
 @defproc[(hash-count [hash hash?])

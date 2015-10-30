@@ -8,7 +8,7 @@
                "planet-lib"
                "net-lib"
                "net-test" ; for tests/net/available
-               "serialize-cstruct-lib" ; tested here               
+               "serialize-cstruct-lib" ; tested here
                "cext-lib" ; tested here
                "pconvert-lib" ; tested here
 
@@ -22,12 +22,14 @@
                ;; for `json` tests
                "at-exp-lib"
 
+               ;; used by the planet packages tested by the pkg tests
+               "srfi-lib"
+
                ;; used to test setup, module readers, pkg system
                "scribble-lib"))
 
 (define build-deps '("racket-index"
                      "scheme-lib"
-                     "srfi-lite-lib"
                      "base"
                      "data-lib"))
 
