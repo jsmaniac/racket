@@ -148,6 +148,17 @@
 (test #f syntax-original? ((make-syntax-introducer) #'here))
 (test #t syntax-original? ((make-syntax-introducer #t) #'here))
 
+(let* ([a (datum->syntax #f 'a)]
+       [a1 ((make-syntax-introducer) a)]
+       [a2 ((make-syntax-introducer) a)])
+  (test #f bound-identifier=? a1 a2)
+  (test #t bound-identifier=? a1 ((make-syntax-delta-introducer a1 a2) a))
+  (test #t bound-identifier=? a2 ((make-syntax-delta-introducer a2 a1) a))
+  (test #t bound-identifier=? a2 ((make-syntax-delta-introducer a2 #f) a))
+  (test #t bound-identifier=?
+        ((make-syntax-delta-introducer a1 a2) a2)
+        ((make-syntax-delta-introducer a2 a1) a1)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Test basic expansion and property propagation
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1815,6 +1826,18 @@
                                          [(b . _) (datum->syntax #'b 'begin)]))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; syntax-debug-info
+
+(let ([check (lambda (syntax-debug-info)
+               (test 'x hash-ref (syntax-debug-info #'x) 'name)
+               (test 'nope hash-ref (syntax-debug-info #'1) 'name 'nope)
+               (test 'nope hash-ref (syntax-debug-info #'(x y)) 'name 'nope))])
+  (check syntax-debug-info)
+  (parameterize ([current-namespace (make-base-namespace)])
+    (eval '(require (prefix-in foo: racket/base)))
+    (check (lambda (stx) (syntax-debug-info (namespace-syntax-introduce stx))))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that attacks are thwarted via `syntax-local-get-shadower'
 ;; or `make-syntax-delta-introducer':
 
@@ -2095,7 +2118,7 @@
     (err/rt-test (apply raise-syntax-error #f "oops" a0 a1 args)
                  (lambda (exn)
                    (and (exn:fail:syntax? exn)
-                        (regexp-match? (format "^[^:\n]*:~a:~a:" 
+                        (regexp-match? (format "^([a-zA-Z]:)?[^:\n]*:~a:~a:"
                                                (or (syntax-line a1)
                                                    (syntax-line a0))
                                                (or (syntax-column a1)
@@ -2226,6 +2249,50 @@
         (eval (parameterize ([read-accept-compiled #t]
                              [current-load-relative-directory (build-path dir "inner")])
                 (read i)))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that shadowing doesn't create an ill-formed internal
+;; representation of binding:
+
+(let ()
+  ;; Make introducers before namespace, so they have older scopes, which
+  ;; means that bindings will be attached to the namespace's scope:
+  (define i1 (make-syntax-introducer))
+  (define i2 (make-syntax-introducer))
+  (define ns (make-base-namespace))
+  (eval `(define car 0) ns)
+  (eval `(define ,(i1 (datum->syntax #f 'car)) 1) ns)
+  (eval `(define ,(i2 (datum->syntax #f 'car)) 2) ns)
+  (eval `(require racket/base) ns) ; replaces plain `car` mapping
+  (write (compile-syntax
+          #`(quote-syntax #,(parameterize ([current-namespace ns])
+                              (namespace-syntax-introduce (datum->syntax #f 'car)))))
+         (open-output-bytes)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that reading a compiled module doesn't mutate the
+;; shared "self" modix for a submodule:
+
+(parameterize ([current-namespace (make-base-namespace)])
+  (define o (open-output-bytes))
+  (write (compile `(module name-1 racket/base (module+ inside))) o)
+  (define m
+    (parameterize ([read-accept-compiled #t])
+      (read (open-input-bytes (get-output-bytes o)))))
+  (define s (expand `(module name-2 racket/base (module+ inside (define check-me 1)))))
+  (test "(|expanded module| inside)"
+        format
+        "~s"
+        (resolved-module-path-name
+         (let loop ([s s])
+           (cond
+            [(identifier? s)
+             (and (equal? 'check-me (syntax-e s))
+                  (module-path-index-resolve (car (identifier-binding s))))]
+            [(syntax? s) (loop (syntax-e s))]
+            [(pair? s)
+             (or (loop (car s)) (loop (cdr s)))]
+            [else #f])))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -50,6 +50,7 @@ typedef struct mpage {
   unsigned char has_new       :1;
   unsigned char mprotected    :1;
   unsigned char reprotect     :1; /* in reprotect_next chain already */
+  unsigned char non_dead_as_mark :1; /* already repaired in incremental pass */
 } mpage;
 
 typedef struct Gen0 {
@@ -148,6 +149,15 @@ typedef mpage **PageMap;
 
 #define NUM_MED_PAGE_SIZES (((LOG_APAGE_SIZE - 1) - 3) + 1)
 
+enum {
+  FNL_LEVEL_GEN_0,
+  FNL_LEVEL_GEN_1,
+  FNL_LEVEL_INC_1,
+  FNL_LEVEL_INC_2,
+  FNL_LEVEL_INC_3,
+  NUM_FNL_LEVELS
+};
+
 typedef struct NewGC {
   Gen0 gen0;
   Gen_Half gen_half;
@@ -168,15 +178,17 @@ typedef struct NewGC {
   struct mpage *modified_next;
   /* pages marked incrementally: */
   struct mpage *inc_modified_next;
+  /* tail of inc_modified_next being repaired incrementally */
+  struct mpage *inc_repair_next;
   /* linked list of pages that need to be given write protection at
      the end of the GC cycle: */
   struct mpage *reprotect_next;
 
-  MarkSegment *mark_stack, *inc_mark_stack;
+  MarkSegment *mark_stack, *inc_mark_stack, *acct_mark_stack;
 
   /* Finalization */
-  Fnl *run_queue;
-  Fnl *last_in_queue;
+  Fnl *run_queue, *last_in_queue;
+  Fnl *inc_run_queue, *inc_last_in_queue;
 
   int mark_depth;
 
@@ -200,23 +212,31 @@ typedef struct NewGC {
 
   unsigned char generations_available        :1;
   unsigned char started_incremental          :1; /* must stick with incremental until major GC */
+  unsigned char all_marked_incremental       :1; /* finished all marking for an incremental GC */
+  unsigned char finished_incremental         :1; /* finished marking and reparing an incremental GC */
+  unsigned char accounted_incremental        :1; /* memory accounting for an incremental GC */
   unsigned char in_unsafe_allocation_mode    :1;
-  unsigned char full_needed_for_finalization :1;
+  unsigned char full_needed_again            :1;
   unsigned char no_further_modifications     :1;
   unsigned char gc_full                      :1; /* a flag saying if this is a full/major collection */
+  unsigned char had_finished_incremental     :1; /* when gc_full, indicates full GC after incremental finished */
   unsigned char use_gen_half                 :1;
   unsigned char running_finalizers           :1;
   unsigned char back_pointers                :1;
   unsigned char need_fixup                   :1;
-  unsigned char check_gen1                   :1;
-  unsigned char mark_gen1                    :1;
-  unsigned char inc_gen1                     :1;
+  unsigned char check_gen1                   :1; /* check marks bit for old generation (instead of claiming always marked) */
+  unsigned char mark_gen1                    :1; /* set mark bits for old generation */
+  unsigned char inc_gen1                     :1; /* during incremental marking of old generation */
+  unsigned char fnl_gen1                     :1; /* during incremental finalization of old generation */
   unsigned char during_backpointer           :1;
-  unsigned char incremental_requested        :1;
+  unsigned char incremental_requested        :4; /* counts down to track recentness of request */
+  unsigned char high_fragmentation           :1;
+  unsigned char unprotected_page             :1;
 
   /* blame the child */
   unsigned int doing_memory_accounting        :1;
   unsigned int really_doing_accounting        :1;
+  unsigned int next_really_doing_accounting   :1;
   unsigned int old_btc_mark                   :1;
   unsigned int new_btc_mark                   :1;
   unsigned int reset_limits                   :1;
@@ -231,10 +251,11 @@ typedef struct NewGC {
   uintptr_t number_of_gc_runs;
   unsigned int since_last_full;
   uintptr_t last_full_mem_use;
-  uintptr_t inc_mem_use_threshold;
 
   uintptr_t prop_count;
   uintptr_t inc_prop_count;
+  uintptr_t copy_count;     /* bytes */
+  uintptr_t traverse_count; /* words */
 
   /* These collect information about memory usage, for use in GC_dump. */
   uintptr_t peak_memory_use;
@@ -267,13 +288,13 @@ typedef struct NewGC {
   GC_collect_inform_callback_Proc GC_collect_inform_callback;
   uintptr_t (*GC_get_thread_stack_base)(void);
   GC_Post_Propagate_Hook_Proc GC_post_propagate_hook;
+  GC_Treat_As_Incremental_Mark_Proc treat_as_incremental_mark_hook;
+  short treat_as_incremental_mark_tag;
 
   GC_Immobile_Box *immobile_boxes;
 
-  Fnl *finalizers;
-  Fnl *splayed_finalizers;
-  Fnl *gen0_finalizers;
-  Fnl *splayed_gen0_finalizers;
+  Fnl *finalizers[NUM_FNL_LEVELS];
+  Fnl *splayed_finalizers[NUM_FNL_LEVELS];
   int num_fnls;
 
   void *park[2];
@@ -286,8 +307,10 @@ typedef struct NewGC {
   unsigned short cust_box_tag;
   unsigned short phantom_tag;
 
-  uintptr_t phantom_count;
-  uintptr_t gen0_phantom_count;
+  uintptr_t phantom_count; /* old-generation count; included in `memory_in_use`, except during a minor collection */
+  uintptr_t gen0_phantom_count; /* count for generation 0 + 1/2 */
+  uintptr_t inc_phantom_count; /* accumulated count for an incremental collection */
+  uintptr_t acct_phantom_count; /* count that is set during memory accounting */
 
   Roots roots;  
   struct MMU     *mmu;
@@ -305,6 +328,8 @@ typedef struct NewGC {
   GC_Weak_Box   *weak_boxes[2], *inc_weak_boxes[2], *bp_weak_boxes[2];
   GC_Ephemeron  *ephemerons, *inc_ephemerons, *bp_ephemerons;
   int num_last_seen_ephemerons;
+
+  void *weak_incremental_done;
 
   Allocator *saved_allocator;
 

@@ -36,7 +36,11 @@ WIN32_RUN_RACKET = $(WIN32_PLAIN_RACKET) -G racket/etc -X racket/collects
 RUN_RACO = $(RUN_RACKET) -N raco -l- raco
 WIN32_RUN_RACO = $(WIN32_RUN_RACKET) -N raco -l- raco
 
-DEFAULT_SRC_CATALOG = http://pkgs.racket-lang.org
+DEFAULT_SRC_CATALOG = https://pkgs.racket-lang.org
+
+# Belongs in the "Configuration options" section, but here
+# to accomodate nmake:
+SRC_CATALOG = $(DEFAULT_SRC_CATALOG)
 
 CPUS = 
 
@@ -69,7 +73,7 @@ plain-in-place:
 
 win32-in-place:
 	$(MAKE) win32-base
-	$(MAKE) win32-pkgs-catalog
+	$(MAKE) win32-pkgs-catalog SRC_CATALOG="$(SRC_CATALOG)"
 	$(WIN32_RUN_RACO) pkg update $(UPDATE_PKGS_ARGS)
 	$(WIN32_RUN_RACO) pkg install $(INSTALL_PKGS_ARGS)
 	$(WIN32_RUN_RACO) setup --only-foreign-libs $(ALL_PLT_SETUP_OPTIONS)
@@ -194,8 +198,8 @@ racket/src/build/cross/Makefile: racket/src/configure racket/src/Makefile.in
 # end in "_q" or "_qq", don't use any quote marks on the right-hand
 # side of its definition.
 
-# Catalog for package sources:
-SRC_CATALOG = $(DEFAULT_SRC_CATALOG)
+# Catalog for package sources (defined above):
+# SRC_CATALOG = $(DEFAULT_SRC_CATALOG)
 
 # A URL embedded in documentation for remote searches, where a Racket
 # version and search key are added as query fields to the URL, and ""
@@ -234,6 +238,9 @@ VERSIONLESS_MODE =
 # instead of a ".dmg" for drag-and-drop installation:
 MAC_PKG_MODE =
 
+# Set to "--tgz" to create a ".tgz" archive instead of an installer:
+TGZ_MODE =
+
 # Set to "--source --no-setup" to include packages in an installer
 # (or archive) only in source form:
 PKG_SOURCE_MODE = 
@@ -264,9 +271,13 @@ BUILD_STAMP =
 # the default as the version number:
 INSTALL_NAME =
 
-# A signing identity (spaces allowed) for Mac OS X binaries in an
+# For Mac OS X, a signing identity (spaces allowed) for binaries in an
 # installer:
 SIGN_IDENTITY = 
+
+# For Windows, `osslsigncode' arguments other than `-n', `-t', `-in',
+# and `-out' as a Base64-encoded, S-expression, list of strings:
+OSSLSIGNCODE_ARGS_BASE64 =
 
 # URL for a README file to include in an installer (empty for none,
 # spaces allowed):
@@ -339,8 +350,10 @@ pkgs-catalog:
 	$(RUN_RACKET) $(PKGS_CONFIG) "$(DEFAULT_SRC_CATALOG)" "$(SRC_CATALOG)"
 	$(RUN_RACKET) racket/src/pkgs-check.rkt racket/share/pkgs-catalog
 
+COPY_PKGS_ARGS = PLAIN_RACKET="$(WIN32_PLAIN_RACKET)" SRC_CATALOG="$(SRC_CATALOG)"
+
 win32-pkgs-catalog:
-	$(MAKE) pkgs-catalog PLAIN_RACKET="$(WIN32_PLAIN_RACKET)"
+	$(MAKE) pkgs-catalog $(COPY_PKGS_ARGS)
 
 # ------------------------------------------------------------
 # On a server platform (for an installer build):
@@ -443,11 +456,12 @@ PROP_ARGS = SERVER=$(SERVER) SERVER_PORT=$(SERVER_PORT) SERVER_HOSTS="$(SERVER_H
             PKGS="$(PKGS)" PLAIN_RACKET="$(PLAIN_RACKET)" BUILD_STAMP="$(BUILD_STAMP)" \
 	    RELEASE_MODE=$(RELEASE_MODE) SOURCE_MODE=$(SOURCE_MODE) \
             VERSIONLESS_MODE=$(VERSIONLESS_MODE) MAC_PKG_MODE=$(MAC_PKG_MODE) \
-            PKG_SOURCE_MODE="$(PKG_SOURCE_MODE)" INSTALL_NAME="$(INSTALL_NAME)"\
+            PKG_SOURCE_MODE="$(PKG_SOURCE_MODE)" INSTALL_NAME="$(INSTALL_NAME)" \
             DIST_NAME="$(DIST_NAME)" DIST_BASE=$(DIST_BASE) \
             DIST_DIR=$(DIST_DIR) DIST_SUFFIX=$(DIST_SUFFIX) UPLOAD="$(UPLOAD)" \
-            DIST_DESC="$(DIST_DESC)" README="$(README)" SIGN_IDENTITY="$(SIGN_IDENTITY)"\
-            JOB_OPTIONS="$(JOB_OPTIONS)"
+            DIST_DESC="$(DIST_DESC)" README="$(README)" SIGN_IDENTITY="$(SIGN_IDENTITY)" \
+            OSSLSIGNCODE_ARGS_BASE64="$(OSSLSIGNCODE_ARGS_BASE64)" JOB_OPTIONS="$(JOB_OPTIONS)" \
+            TGZ_MODE=$(TGZ_MODE)
 
 COPY_ARGS = $(PROP_ARGS) \
             SERVER_CATALOG_PATH=$(SERVER_CATALOG_PATH) SERVER_COLLECTS_PATH=$(SERVER_COLLECTS_PATH)
@@ -496,9 +510,10 @@ bundle-from-server:
 	$(RACKET) -l setup/unixstyle-install post-adjust "$(SOURCE_MODE)" "$(PKG_SOURCE_MODE)" racket bundle/racket
 
 UPLOAD_q = --readme "$(README)" --upload "$(UPLOAD)" --desc "$(DIST_DESC)"
-DIST_ARGS_q = $(UPLOAD_q) $(RELEASE_MODE) $(SOURCE_MODE) $(VERSIONLESS_MODE) $(MAC_PKG_MODE) \
+DIST_ARGS_q = $(UPLOAD_q) $(RELEASE_MODE) $(SOURCE_MODE) $(VERSIONLESS_MODE) \
+              $(MAC_PKG_MODE) $(TGZ_MODE) \
               "$(DIST_NAME)" $(DIST_BASE) $(DIST_DIR) "$(DIST_SUFFIX)" \
-              "$(SIGN_IDENTITY)"
+              "$(SIGN_IDENTITY)" "$(OSSLSIGNCODE_ARGS_BASE64)"
 
 # Create an installer from the build (with installed packages) that's
 # in "bundle/racket":

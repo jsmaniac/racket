@@ -318,6 +318,23 @@
   (test/pos-blame
    'contract-any/c-arrow4
    '(contract (-> any/c any) (λ (x #:y y) x) 'pos 'neg))
+
+  (test/neg-blame
+   'contract-any/c-arrow5
+   '((contract (-> any/c any) (λ (x [y 1]) x) 'pos 'neg) 1 2))
+  
+  (test/spec-passed/result
+   'contract-any/c-arrow6
+   '(let ([f (λ (x) x)])
+      (eq? f (contract (-> any/c any) f 'pos 'neg)))
+   #t)
+
+  (test/spec-passed/result
+   'contract-any/c-arrow7
+   '(let ([f (λ (x [y 1]) x)])
+      (eq? f (contract (-> any/c any) f 'pos 'neg)))
+   #f)
+  
   
   (test/spec-passed
    'contract-arrow-all-kwds2
@@ -340,6 +357,21 @@
           ;; pass; this is fixed in a separate branch that can't 
           (regexp-match #rx"expected:? keyword argument #:the-missing-keyword-arg-b"
                         (exn-message x)))))
+
+  ;; need to preserve the inner contract here
+  ;; (not the outer one)
+  ;; when dropping redundant tail contracts
+  (test/pos-blame
+   'tail-wrapping-preserves-blame
+   '(let ([c (-> number? number?)])
+      ((contract
+        c
+        (contract
+         c
+         (λ (x) #f)
+         'pos 'neg)
+        'something-else 'yet-another-thing)
+       1)))
   
   (test/pos-blame
    'predicate/c1
@@ -386,6 +418,13 @@
   (test/pos-blame
    'predicate/c13
    '(contract (-> any/c boolean?) (λ (x #:y y) #t) 'pos 'neg))
+  (test/pos-blame
+   'predicate/c14
+   '(contract (-> any/c boolean?)
+              (let ()
+                (struct s ())
+                ((impersonate-procedure s? (λ (x) (values (λ (r) "") x))) 11))
+              'pos 'neg))
   
   ;; this test ensures that no contract wrappers
   ;; are created for struct predicates

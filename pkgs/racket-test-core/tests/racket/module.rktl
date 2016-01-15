@@ -1625,5 +1625,129 @@ case of module-leve bindings; it doesn't cover local bindings.
 (test 1 values (lifted-require-of-x (submod 'has-a-submodule-that-exports-x b)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; This test happens to trigger a combination
+;; of lazy adds and reoves that exposed a bug
+;; in caching lazy scope propagations
+
+(eval
+ (expand
+  #'(module x racket/kernel
+      (module ma racket/base
+        (#%module-begin
+         (#%require (for-syntax racket/kernel))
+         (define-values (x) 1)
+         (define-syntaxes (foo) (lambda (stx) (quote-syntax x)))
+         (#%provide foo)))
+      (module mb racket/kernel
+        (#%require (submod ".." ma))
+        (foo)))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that shutting down a custodian
+;; releases a lock as it should
+
+(parameterize ([current-custodian (make-custodian)])
+  (thread-wait
+   (thread
+    (lambda ()
+      (parameterize ([current-namespace (make-base-namespace)])
+        (eval '(module m racket/base
+                (require (for-syntax racket/base))
+                (begin-for-syntax
+                  #;(log-error "nested")
+                  ;; Using an environment variable to communicate across phases:
+                  (when (getenv "PLT_ready_to_end")
+                    #;(log-error "adios")
+                    (custodian-shutdown-all (current-custodian))))))
+        (eval '(module n racket/base
+                (require (for-syntax racket/base))
+                (begin-for-syntax
+                  #;(log-error "outer")
+                  (dynamic-require ''m 0)
+                  (eval #f))))
+        (putenv "PLT_ready_to_end" "yes")
+        (dynamic-require ''n 0)
+        #;(log-error "go")
+        (eval #f))))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check `namespace-mapped-symbols` and modidx shifting
+
+(let ()
+  (define tmp (make-temporary-file "~a-module-test" 'directory))
+  (parameterize ([current-directory tmp]
+                 [current-load-relative-directory tmp])
+    (make-directory "compiled")
+    (call-with-output-file*
+     "compiled/a_rkt.zo"
+     (lambda (o) (write (compile '(module a racket/base
+                              (provide (all-defined-out))
+                              (define a 1)
+                              (define b 2)
+                              (define c 3)))
+                   o)))
+    (call-with-output-file*
+     "compiled/b_rkt.zo"
+     (lambda (o) (write (compile '(module b racket/base
+                              (require "a.rkt"
+                                       ;; Force saving of context, instead of
+                                       ;; reconstruction:
+                                       (only-in racket/base [car extra-car]))))
+                   o))))
+  (dynamic-require (build-path tmp "b.rkt") #f)
+  (define ns (module->namespace (build-path tmp "b.rkt")))
+  (test #t
+        'mapped-symbols
+        (and (for/and ([name '(a b c)])
+               (member name (namespace-mapped-symbols ns)))
+             #t))
+  (delete-directory/files tmp))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module exports-x*-as-x racket/base
+  (define x* 5)
+  (provide (rename-out [x* x])))
+
+(module exports-x**-as-x racket/base
+  (require 'exports-x*-as-x)
+  (define x* 5)
+  (define-syntax-rule (x**) x*)
+  (provide (rename-out [x x***])
+           (rename-out [x** x])))
+
+(require 'exports-x**-as-x)
+(test 5 'five (x))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check 'module-body-context-simple? and 'module-body-...context properties
+
+(define (check-module-body-context-properties with-kar?)
+  (define m (expand `(module m racket/base
+                      ,@(if with-kar?
+                            `((require (rename-in racket/base [car kar])))
+                            null)
+                      (define inside 7))))
+  
+  (test (not with-kar?) syntax-property m 'module-body-context-simple?)
+
+  (define i (syntax-property m 'module-body-context))
+  (define o (syntax-property m 'module-body-inside-context))
+  
+  (test #t syntax? i)
+  (test #t syntax? o)
+  
+  (test car eval-syntax (datum->syntax i 'car))
+  (test 'inside cadr (identifier-binding (datum->syntax i 'inside)))
+  (test #f identifier-binding (datum->syntax o 'inside))
+  (test (if with-kar? 'car #f)
+        'kar-binding
+        (let ([v (identifier-binding (datum->syntax i 'kar))])
+          (and v (cadr v)))))
+
+(check-module-body-context-properties #f)
+(check-module-body-context-properties #t)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (report-errs)

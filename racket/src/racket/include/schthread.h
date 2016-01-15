@@ -202,6 +202,7 @@ typedef struct Thread_Local_Variables {
   struct Scheme_Custodian *new_port_cust_;
 #if (defined(__WIN32__) || defined(WIN32) || defined(_WIN32))
   void *scheme_break_semaphore_;
+  void *process_job_object_;
 #else
   int external_event_fd_;
   int put_external_event_fd_;
@@ -267,7 +268,6 @@ typedef struct Thread_Local_Variables {
   intptr_t scheme_current_cont_mark_stack_;
   intptr_t scheme_current_cont_mark_pos_;
   struct Scheme_Custodian *main_custodian_;
-  struct Scheme_Custodian *last_custodian_;
   struct Scheme_Hash_Table *limited_custodians_;
   struct Scheme_Plumber *initial_plumber_;
   struct Scheme_Config *initial_config_;
@@ -599,6 +599,7 @@ XFORM_GC_VARIABLE_STACK_THROUGH_THREAD_LOCAL;
 #define locked_fd_process_map XOA (scheme_get_thread_local_variables()->locked_fd_process_map_)
 #define new_port_cust XOA (scheme_get_thread_local_variables()->new_port_cust_)
 #define scheme_break_semaphore XOA (scheme_get_thread_local_variables()->scheme_break_semaphore_)
+#define process_job_object XOA (scheme_get_thread_local_variables()->process_job_object_)
 #define external_event_fd XOA (scheme_get_thread_local_variables()->external_event_fd_)
 #define put_external_event_fd XOA (scheme_get_thread_local_variables()->put_external_event_fd_)
 #define read_string_byte_buffer XOA (scheme_get_thread_local_variables()->read_string_byte_buffer_)

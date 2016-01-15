@@ -13,6 +13,7 @@
          current-contract-namespace
          make-basic-contract-namespace
          make-full-contract-namespace
+         full-contract-namespace-initial-set
          
          contract-syntax-error-test
          contract-error-test
@@ -104,10 +105,10 @@
 
 (define (make-full-contract-namespace . addons)
   (apply make-basic-contract-namespace 
-         'racket/contract
-         'racket/class
-         'racket/set
-         addons))
+         (append full-contract-namespace-initial-set addons)))
+(define full-contract-namespace-initial-set
+  '(racket/contract racket/class racket/set))
+         
 
 (define (contract-eval x #:test-case-name [test-case #f])
   (with-handlers ((exn:fail? (λ (x)
@@ -163,7 +164,7 @@
         name
         (contract-eval #:test-case-name name
                        `(with-handlers ((exn:fail:syntax?
-                                         (lambda (x) (and (regexp-match ,reg (exn-message x)) #t))))
+                                         (lambda (x) (regexp-match? ,reg (exn-message x)))))
                           (eval ',exp)))))
 
 ;; test/spec-passed : symbol sexp -> void
@@ -176,7 +177,9 @@
        #:test-case-name ',name
        'no-exn-raised
        eval
-       '(with-handlers ([exn:fail? exn-message])
+       '(with-handlers ([exn:fail? (λ (x) (cons (exn-message x)
+                                                (continuation-mark-set->context
+                                                 (exn-continuation-marks x))))])
           ,expression
           'no-exn-raised)))
     (let ([new-expression (rewrite-out expression)])
@@ -279,7 +282,7 @@
                   (define (good-thing? l)
                     (for/or ([x (in-list l)])
                       (and (symbol? x)
-                           (regexp-match #rx"contract" (symbol->string x)))))
+                           (regexp-match? #rx"contract" (symbol->string x)))))
                   (cond
                     [(and (pair? body)
                           (eq? (car body) 'require)

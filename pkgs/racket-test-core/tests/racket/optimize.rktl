@@ -9,7 +9,10 @@
          racket/unsafe/undefined
          racket/unsafe/ops
          compiler/zo-parse
-         compiler/zo-marshal)
+         compiler/zo-marshal
+         ;; `random` from `racket/base is a Racket function, which makes
+         ;; compilation less predictable than a primitive
+         (only-in '#%kernel random))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -1494,6 +1497,12 @@
            '(lambda (x y) (car x) (unbox y) (eq? x y)))
 (test-comp '(lambda (x) (car x) #f)
            '(lambda (x) (car x) (eq? x (box 0))))
+(test-comp '(lambda (x) (car x) #f)
+           '(lambda (x) (car x) (eq? (begin (newline) x) (box 0)))
+           #f)
+(test-comp '(lambda (x) (car x) #f)
+           '(lambda (x) (car x) (eq? x (begin (newline) (box 0))))
+           #f)
 
 (test-comp '(lambda (w) (car w) (mcar w))
            '(lambda (w) (car w) (mcar w) (random)))
@@ -1527,6 +1536,32 @@
            '(lambda () (car (cons (random 1) (random 2)))))
 (test-comp '(lambda () (begin (random 1) (random 2)))
            '(lambda () (cdr (cons (random 1) (random 2)))))
+
+(test-comp '(lambda () (begin (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin (car (cons (random 1) (random 2))) (random 3) (random 4)))) ;
+(test-comp '(lambda () (begin (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin (cdr (cons (random 1) (random 2))) (random 3) (random 4))))
+(test-comp '(lambda () (begin (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin (random 1) (car (cons (random 2) (random 3))) (random 4)))) ;
+(test-comp '(lambda () (begin (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin (random 1) (cdr (cons (random 2) (random 3))) (random 4))))
+(test-comp '(lambda () (begin (random 1) (random 2) (begin0 (random 3) (random 4))))
+           '(lambda () (begin (random 1) (random 2) (car (cons (random 3) (random 4))))))
+(test-comp '(lambda () (begin (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin (random 1) (random 2) (cdr (cons (random 3) (random 4))))))
+
+(test-comp '(lambda () (begin0 (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin0 (car (cons (random 1) (random 2))) (random 3) (random 4))))
+(test-comp '(lambda () (begin0 (begin (random 1) (random 2)) (random 3) (random 4)))
+           '(lambda () (begin0 (cdr (cons (random 1) (random 2))) (random 3) (random 4))))
+(test-comp '(lambda () (begin0 (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin0 (random 1) (car (cons (random 2) (random 3))) (random 4)))) ;
+(test-comp '(lambda () (begin0 (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin0 (random 1) (cdr (cons (random 2) (random 3))) (random 4))))
+(test-comp '(lambda () (begin0 (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin0 (random 1) (random 2) (car (cons (random 3) (random 4)))))) ;
+(test-comp '(lambda () (begin0 (random 1) (random 2) (random 3) (random 4)))
+           '(lambda () (begin0 (random 1) (random 2) (cdr (cons (random 3) (random 4))))))
 
 (test-comp '(lambda (w)
               (begin (random) w))
@@ -1889,6 +1924,28 @@
               (struct p (x y) #:omit-define-syntaxes)
               (define (g y)
                 (+ y 1))))
+
+
+(test-comp '(let ()
+             (define (f x)
+               (procedure-specialize
+                (lambda (y) (+ x y))))
+             ((f 10) 12))
+           '22)
+
+(test-comp '(let ()
+             (define (f x)
+               (procedure-specialize
+                (lambda (y) (+ x y))))
+             (procedure? (f 10)))
+           '#t)
+
+(test-comp '(let ([f (procedure-specialize
+                      (lambda (y) (+ 1 y)))])
+             (list f (procedure-arity-includes? f 1)))
+           '(let ([f (procedure-specialize
+                      (lambda (y) (+ 1 y)))])
+             (list f #t)))
 
 (test-comp '(values 10)
            10)
@@ -3573,6 +3630,30 @@
            #f)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that the type information is shifted in the
+;; right direction while inlining.
+;; The first example triggered a bug in 6.3.
+
+(test-comp '(let ([zz (lambda (x) (lambda (y) 0))])
+              (lambda (a b c)
+                ((zz (let ([loop (lambda () 0)]) loop)) (car a))
+                (list c (pair? c))))
+           '(let ([zz (lambda (x) (lambda (y) 0))])
+              (lambda (a b c)
+                ((zz (let ([loop (lambda () 0)]) loop)) (car a))
+                (list c #t)))
+           #f)
+
+(test-comp '(let ([zz (lambda (x) (lambda (y) 0))])
+              (lambda (a b c)
+                ((zz (let ([loop (lambda () 0)]) loop)) (car a))
+                (list a (pair? a))))
+           '(let ([zz (lambda (x) (lambda (y) 0))])
+              (lambda (a b c)
+                ((zz (let ([loop (lambda () 0)]) loop)) (car a))
+                (list a #t))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that the unused continuations are removed
 
 (test-comp '(call-with-current-continuation (lambda (ignored) 5))
@@ -4122,9 +4203,9 @@
     (test-values '(-100001.0t0 100001.0t0) tail)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check for corect fixpoint calculation when lifting
+;; Check for correct fixpoint calculation when lifting
 
-;; This test is especilly fragile. It's a minimized(?) variant
+;; This test is especially fragile. It's a minimized(?) variant
 ;; of PR 12910, where just enbought `with-continuation-mark's
 ;; are needed to thwart inlining, and enough functions are 
 ;; present in the right order to require enough fixpoint
@@ -5008,6 +5089,27 @@
     ;; followed by other optimizations changes that:
     (let ([rep (lambda (f) (f f))])
       (dup rep))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check specialization with a capturing lambda:
+
+(let ()
+  (define (f x)
+    (procedure-specialize
+     (lambda (y)
+       (lambda () (+ x y)))))
+  (set! f f)
+  (test 11 ((f 10) 1)))
+
+
+(let ()
+  (define (f x)
+    (set! x (add1 x))
+    (procedure-specialize
+     (lambda (y)
+       (lambda () (+ x y)))))
+  (set! f f)  
+  (test 12 ((f 10) 1)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

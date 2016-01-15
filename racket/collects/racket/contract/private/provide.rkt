@@ -26,14 +26,10 @@
                                 [make-module-identifier-mapping make-free-identifier-mapping]
                                 [module-identifier-mapping-get free-identifier-mapping-get]
                                 [module-identifier-mapping-put! free-identifier-mapping-put!]))
-         "arrow.rkt"
          "arrow-val-first.rkt"
          "base.rkt"
          "guts.rkt"
-         "misc.rkt"
          "exists.rkt"
-         "opt.rkt"
-         "prop.rkt"
          "blame.rkt"
          syntax/location
          syntax/srcloc)
@@ -244,7 +240,7 @@
           (if (and user-rename-id
                    (syntax-source user-rename-id))
               user-rename-id
-              #'ex-id)))
+              ex-id)))
     (with-syntax ([code
                    (syntax-property
                     (quasisyntax/loc stx
@@ -267,12 +263,7 @@
 ;; syntax -> syntax
 ;; returns an expression that evaluates to the source location of the argument
 (define-for-syntax (stx->srcloc-expr srcloc-stx)
-  #`(vector
-     '#,(syntax-source srcloc-stx)
-     #,(syntax-line srcloc-stx)
-     #,(syntax-column srcloc-stx)
-     #,(syntax-position srcloc-stx)
-     #,(syntax-span srcloc-stx)))
+  #`(quote-srcloc #,srcloc-stx))
 
 (define-for-syntax (internal-function-to-be-figured-out ctrct
                                                         id 
@@ -285,10 +276,12 @@
   (define-values (arrow? the-valid-app-shapes)
     (syntax-case ctrct (->2 ->*2 ->i)
       [(->2 . _) 
-       (->2-handled? ctrct)
+       (and (->2-handled? ctrct)
+            (not (->2-arity-check-only->? ctrct)))
        (values #t (->-valid-app-shapes ctrct))]
       [(->*2 . _) 
-       (values (->*2-handled? ctrct)
+       (values (and (->*2-handled? ctrct)
+                    (not (->2*-arity-check-only->? ctrct)))
                (->*-valid-app-shapes ctrct))]
       [(->i . _) (values #t (->i-valid-app-shapes ctrct))]
       [_ (values #f #f)]))
@@ -384,36 +377,25 @@
 
 ;; ... -> (or/c #f (-> blame val))
 (define (do-partial-app ctc val name pos-module-source source)
-  (define p (contract-struct-val-first-projection ctc))
+  (define p (parameterize ([warn-about-val-first? #f])
+              ;; when we're building the val-first projection
+              ;; here we might be needing the plus1 arity
+              ;; function (which will be on the val first's result)
+              ;; so this is a legtimate use. don't warn.
+              (get/build-val-first-projection ctc)))
   (define blme (make-blame (build-source-location source)
                            name
                            (λ () (contract-name ctc))
                            pos-module-source
                            #f #t))
+  (define neg-accepter ((p blme) val))
   
-  (cond
-    [p
-     (define neg-accepter ((p blme) val))
-     
-     ;; we don't have the negative blame here, but we
-     ;; expect only positive failures from this; do the
-     ;; check and then toss the results.
-     (neg-accepter 'incomplete-blame-from-provide.rkt)
-     
-     neg-accepter]
-    [else
-     (define proj (contract-struct-projection ctc))
-     
-     ;; we don't have the negative blame here, but we
-     ;; expect only positive failures from this; do the
-     ;; check and then toss the results.
-     ((proj blme) val)
-     
-     (procedure-rename
-      (λ (neg-party)
-        (define complete-blame (blame-add-missing-party blme neg-party))
-        ((proj complete-blame) val))
-      (string->symbol (format "provide.rkt:neg-party-fn:~s" (contract-name ctc))))]))
+  ;; we don't have the negative blame here, but we
+  ;; expect only positive failures from this; do the
+  ;; check and then toss the results.
+  (neg-accepter 'incomplete-blame-from-provide.rkt)
+  
+  neg-accepter)
 
 (define-for-syntax (true-provide/contract provide-stx just-check-errors? who)
   (syntax-case provide-stx ()
@@ -930,9 +912,11 @@
                        ;; directly here in the expansion makes this very expensive at compile time
                        ;; when there are a lot of provide/contract clause using structs
                        (define -struct:struct-name
-                         (make-pc-struct-type 'struct-name
+                         (make-pc-struct-type #,pos-module-source-id
+                                              'struct-name
                                               struct-name-srcloc
                                               struct:struct-name
+                                              '(#,@field-names)
                                               field-contract-ids ...))
                        (provide (rename-out [-struct:struct-name struct:struct-name]))))))))))
 
@@ -1135,9 +1119,18 @@
 (define-syntax (provide/contract-for-contract-out stx)
   (provide/contract-for-whom stx 'contract-out))
 
-(define (make-pc-struct-type struct-name srcloc struct:struct-name . ctcs)
+(define (make-pc-struct-type pos-module-source struct-name srcloc struct-type field-names . ctcs)
+  (define blame
+    (make-blame (build-source-location srcloc) struct-type (λ () `(substruct-of ,struct-name))
+                pos-module-source #f #t))
+  (define late-neg-acceptors
+    (for/list ([ctc (in-list ctcs)]
+               [field-name (in-list field-names)])
+      ((get/build-late-neg-projection ctc)
+       (blame-add-context blame
+                          (format "the ~a field of" field-name)))))
   (chaperone-struct-type
-   struct:struct-name
+   struct-type
    (λ (a b c d e f g h) (values a b c d e f g h))
    (λ (x) x)
    (λ args
@@ -1151,12 +1144,7 @@
             null]
            [else (cons (car args) (loop (cdr args)))])))
      (apply values
-            (map (λ (ctc val)
-                   (contract ctc
-                             val
-                             'not-enough-info-for-blame
-                             'not-enough-info-for-blame
-                             name
-                             srcloc))
-                 ctcs
+            (map (λ (late-neg-acceptors val)
+                   (late-neg-acceptors val 'not-enough-info-for-blame))
+                 late-neg-acceptors
                  vals)))))

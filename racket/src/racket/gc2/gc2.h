@@ -31,12 +31,13 @@ typedef int (*Fixup_Proc)(void *obj);
 typedef int (*Fixup2_Proc)(void *obj, struct NewGC *);
 typedef void (*GC_collect_start_callback_Proc)(void);
 typedef void (*GC_collect_end_callback_Proc)(void);
-typedef void (*GC_collect_inform_callback_Proc)(int master_gc, int major_gc, 
+typedef void (*GC_collect_inform_callback_Proc)(int master_gc, int major_gc, int inc_gc,
                                                 intptr_t pre_used, intptr_t post_used,
                                                 intptr_t pre_admin, intptr_t post_admin,
                                                 intptr_t post_child_places_used);
 typedef uintptr_t (*GC_get_thread_stack_base_Proc)(void);
 typedef void (*GC_Post_Propagate_Hook_Proc)(struct NewGC *);
+typedef int (*GC_Treat_As_Incremental_Mark_Proc)(void *p);
 /* 
    Types of the traversal procs (supplied by Racket); see overview in README
    for information about traversals. The return value is the size of
@@ -119,6 +120,7 @@ GC2_EXTERN GC_collect_start_callback_Proc GC_set_collect_start_callback(GC_colle
 GC2_EXTERN GC_collect_end_callback_Proc GC_set_collect_end_callback(GC_collect_end_callback_Proc);
 GC2_EXTERN void GC_set_collect_inform_callback(GC_collect_inform_callback_Proc);
 GC2_EXTERN void GC_set_post_propagate_hook(GC_Post_Propagate_Hook_Proc);
+GC2_EXTERN void GC_set_treat_as_incremental_mark(short tag, GC_Treat_As_Incremental_Mark_Proc);
 /*
    Sets callbacks called by GC before/after performing a collection.  Used by
    Racket to zero out some data and record collection times. The end
@@ -171,6 +173,11 @@ GC2_EXTERN void GC_enable_collection(int on);
 GC2_EXTERN void GC_request_incremental_mode(void);
 /*
    Requests incremental mode; lasts until the next major collection. */
+  
+GC2_EXTERN void GC_set_incremental_mode(int on);
+/*
+   Sets whether incremental mode is the default (1), always disabled (0),
+   or available on demand (-1). */
   
 GC2_EXTERN void GC_free_all(void);
 /*
@@ -380,8 +387,9 @@ GC2_EXTERN int GC_current_mode(struct NewGC *gc);
 # define GC_CURRENT_MODE_MINOR               0
 # define GC_CURRENT_MODE_MAJOR               1
 # define GC_CURRENT_MODE_INCREMENTAL         2
-# define GC_CURRENT_MODE_BACKPOINTER_REMARK  3
-# define GC_CURRENT_MODE_ACCOUNTING          4
+# define GC_CURRENT_MODE_INCREMENTAL_FINAL   3
+# define GC_CURRENT_MODE_BACKPOINTER_REMARK  4
+# define GC_CURRENT_MODE_ACCOUNTING          5
 /*
    The mode during a mark or fixup function callback.
    The GC_CURRENT_MODE_BACKPOINTER_REMARK mode corresponds

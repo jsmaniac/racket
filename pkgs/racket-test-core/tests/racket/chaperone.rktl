@@ -348,6 +348,28 @@
    (test (vector 1110 1111) values in)
    (check-proc-prop f mk)))
 
+;; Single argument, no post filter, set continuation mark:
+(as-chaperone-or-impersonator
+ ([chaperone-procedure impersonate-procedure
+                       chaperone-procedure**
+                       impersonate-procedure**])
+ (let* ([f (lambda (x) (list x (continuation-mark-set-first #f 'the-mark)))]
+        [in #f]
+        [mk (lambda (f)
+              (chaperone-procedure 
+               f 
+               (lambda (x) 
+                 (set! in x)
+                 (values 'mark 'the-mark 8 x))))]
+        [f2 (mk f)])
+   (with-continuation-mark 'the-mark
+     7
+     (test '(110 7) f 110))
+   (test #f values in)
+   (test '(111 8) f2 111)
+   (test 111 values in)
+   (check-proc-prop f mk)))
+
 ;; Single argument, post filter on single value:
 (as-chaperone-or-impersonator
  ([chaperone-procedure impersonate-procedure
@@ -400,6 +422,42 @@
    (test (vector 'b '(a c)) values out)
    (check-proc-prop f mk)))
 
+;; Multiple arguments, post filter on multiple values
+;; and set multiple continuation marks:
+(as-chaperone-or-impersonator
+ ([chaperone-procedure impersonate-procedure
+                       chaperone-procedure**
+                       impersonate-procedure**])
+ (let* ([f (lambda (x y z) (values y (list x z
+                                      (continuation-mark-set-first #f 'the-mark)
+                                      (continuation-mark-set-first #f 'the-other-mark))))]
+        [in #f]
+        [out #f]
+        [mk (lambda (f)
+              (chaperone-procedure 
+               f 
+               (lambda (x y z)
+                 (set! in (vector x y z))
+                 (values (lambda (y z)
+                           (set! out (vector y z))
+                           (values y z))
+                         'mark 'the-mark 88
+                         'mark 'the-other-mark 86
+                         x y z))))]
+        [f2 (mk f)])
+   (with-continuation-mark 'the-mark
+     77
+     (with-continuation-mark 'the-other-mark
+       79
+       (begin
+         (test-values '(b (a c 77 79)) (lambda () (f 'a 'b 'c)))
+         (test #f values in)
+         (test #f values out)
+         (test-values '(b (a c 88 86)) (lambda () (f2 'a 'b 'c)))
+         (test (vector 'a 'b 'c) values in)
+         (test (vector 'b '(a c 88 86)) values out)
+         (check-proc-prop f mk))))))
+
 ;; Optional keyword arguments:
 (as-chaperone-or-impersonator
  ([chaperone-procedure impersonate-procedure
@@ -431,6 +489,43 @@
    (test 'f object-name f2)
    (test-values '(() (#:a #:b)) (lambda () (procedure-keywords f2)))
    (check-proc-prop f mk)))
+
+;; Optional keyword arguments with mark:
+(as-chaperone-or-impersonator
+ ([chaperone-procedure impersonate-procedure
+                       chaperone-procedure**/kw
+                       impersonate-procedure**/kw])
+ (let* ([f (lambda (x #:a [a 'a] #:b [b 'b]) (list x a b (continuation-mark-set-first #f 'the-mark)))]
+        [in #f]
+        [mk (lambda (f)
+              (chaperone-procedure
+               f
+               (lambda (x #:a [a 'nope] #:b [b 'nope])
+                 (if (and (eq? a 'nope) (eq? b 'nope))
+                     (values 'mark 'the-mark 8
+                             x)
+                     (values
+                      'mark 'the-mark 8
+                      (append 
+                       (if (eq? a 'nope) null (list a))
+                       (if (eq? b 'nope) null (list b)))
+                      x)))))]
+        [f2 (mk f)])
+   (with-continuation-mark 'the-mark
+     7
+     (begin
+       (test '(1 a b 7) f 1)
+       (test '(1 a b 8) f2 1)
+       (test '(1 2 b 7) f 1 #:a 2)
+       (test '(1 2 b 8) f2 1 #:a 2)
+       (test '(1 a 3 7) f 1 #:b 3)
+       (test '(1 a 3 8) f2 1 #:b 3)
+       (test '(1 2 3 7) f 1 #:a 2 #:b 3)
+       (test '(1 2 3 8) f2 1 #:a 2 #:b 3)
+       (test 1 procedure-arity f2)
+       (test 'f object-name f2)
+       (test-values '(() (#:a #:b)) (lambda () (procedure-keywords f2)))
+       (check-proc-prop f mk)))))
 
 ;; Optional keyword arguments with result chaperone:
 (as-chaperone-or-impersonator
@@ -502,7 +597,7 @@
    (test-values '((#:b) (#:a #:b)) (lambda () (procedure-keywords f2)))
    (check-proc-prop f mk)))
 
-;; Required keyword arguments:
+;; Required keyword arguments with result chaperone:
 (as-chaperone-or-impersonator
  ([chaperone-procedure impersonate-procedure
                        chaperone-procedure**/kw
@@ -537,6 +632,46 @@
    (test 'f object-name f2)
    (test-values '((#:b) (#:a #:b)) (lambda () (procedure-keywords f2)))
    (check-proc-prop f mk)))
+
+;; Required keyword arguments with result chaperone and marks:
+(as-chaperone-or-impersonator
+ ([chaperone-procedure impersonate-procedure
+                       chaperone-procedure**/kw
+                       impersonate-procedure**/kw])
+ (let* ([f (lambda (x #:a [a 'a] #:b b) (list x a b (continuation-mark-set-first #f 'the-mark)))]
+        [in #f]
+        [out #f]
+        [mk (lambda (f)
+              (chaperone-procedure
+               f
+               (lambda (x #:a [a 'nope] #:b [b 'nope])
+                 (set! in (list x a b))
+                 (if (and (eq? a 'nope) (eq? b 'nope))
+                     x
+                     (values
+                      (lambda (z) (set! out z) z)
+                      'mark 'the-mark 9
+                      (append 
+                       (if (eq? a 'nope) null (list a))
+                       (if (eq? b 'nope) null (list b)))
+                      x)))))]
+        [f2 (mk f)])
+   (with-continuation-mark 'the-mark
+     7
+     (begin
+       (err/rt-test (f 1))
+       (err/rt-test (f2 1))
+       (err/rt-test (f 1 #:a 2))
+       (err/rt-test (f2 1 #:a 2))
+       (test '(1 a 3 7) f 1 #:b 3)
+       (test '(1 a 3 9) f2 1 #:b 3)
+       (test '((1 nope 3) (1 a 3 9)) list in out)
+       (test '(1 2 3 7) f 1 #:a 2 #:b 3)
+       (test '(1 2 3 9) f2 1 #:a 2 #:b 3)
+       (test 1 procedure-arity f2)
+       (test 'f object-name f2)
+       (test-values '((#:b) (#:a #:b)) (lambda () (procedure-keywords f2)))
+       (check-proc-prop f mk)))))
 
 (err/rt-test ((chaperone-procedure (lambda (x) x) (lambda (y) (values y y))) 1))
 (err/rt-test ((impersonate-procedure (lambda (x) x) (lambda (y) (values y y))) 1))
@@ -1067,11 +1202,15 @@
   (test #t chaperone? (mk))
   (test #t chaperone? (mk #f))
   (test #t chaperone? (mk (lambda (ht) (void))))
+  (test #t chaperone? (mk (lambda (ht) (void)) (lambda (ht k) (void))))
+  (test #t chaperone? (mk #f (lambda (ht k) (void))))
   (err/rt-test (mk (lambda (a b) (void))))
   (define-values (prop:blue blue? blue-ref) (make-impersonator-property 'blue))
   (test #t chaperone? (mk prop:blue 'ok))
   (test #t chaperone? (mk #f prop:blue 'ok))
-  (err/rt-test (mk (lambda (a b) (void)) prop:blue 'ok)))
+  (test #t chaperone? (mk #f #f prop:blue 'ok))
+  (err/rt-test (mk (lambda (a b) (void)) prop:blue 'ok))
+  (err/rt-test (mk #f (lambda (a) (void)) prop:blue 'ok)))
 
 (for-each
  (lambda (make-hash)
@@ -1335,7 +1474,124 @@
      (define ht4 (hash-clear ht2))
      (test #t values hit?)
      (test 0 hash-count ht4))))
- 
+
+;; Check use of equal-key-proc argument:
+(as-chaperone-or-impersonator
+ ([chaperone-hash impersonate-hash]
+  [chaperone-procedure impersonate-procedure])
+ (define saw null)
+ (define (mk ht)
+   (chaperone-hash ht
+                   (lambda (h k)
+                     (values k
+                             (lambda (h k v) v)))
+                   (lambda (h k v)
+                     (values k v))
+                   (lambda (h k) k)
+                   (lambda (h k) k)
+                   #f
+                   (lambda (h k) (set! saw (cons k saw)) k)))
+ (for ([make-hash (in-list (list make-hash make-weak-hash))])
+   (set! saw null)
+   (define ht (make-hash))
+   (define cht (mk ht))
+   (hash-set! cht "x" 1)
+   (test '("x") values saw)
+   (define new-x (make-string 1 #\x))
+   (void (hash-ref cht new-x))
+   (test '("x" "x" "x") values saw)
+   (test #t 'new-x (and (member new-x saw) #t))
+   (set! saw null)
+   (hash-set! cht new-x 5)
+   (test '("x" "x") values saw)
+   (test #t 'new-x (and (member new-x saw) #t))
+   (set! saw null)
+   (hash-remove! cht new-x)
+   (test '("x" "x") values saw)
+   (test #t 'new-x (and (member new-x saw) #t)))
+ (unless (eq? chaperone-hash impersonate-hash)
+   (for ([hash (in-list (list hash))])
+     (set! saw null)
+     (define ht (mk (hash)))
+     (define ht1 (hash-set ht "x" 1))
+     (test '("x") values saw)
+     (define new-x (make-string 1 #\x))
+     (void (hash-ref ht1 new-x))
+     (test '("x" "x" "x") values saw)
+     (test #t 'new-x (and (member new-x saw) #t))
+     (set! saw null)
+     (void (hash-set ht1 new-x 5))
+     (test '("x" "x") values saw)
+     (test #t 'new-x (and (member new-x saw) #t))
+     (set! saw null)
+     (void (hash-remove ht1 new-x))
+     (test '("x" "x") values saw)
+     (test #t 'new-x (and (member new-x saw) #t)))))
+
+;; Check that hash table stores given key while
+;; coercing key for hashing and equality:
+(let ()
+  (define (mk ht)
+    (impersonate-hash ht
+                      (lambda (h k)
+                        (values k
+                                (lambda (h k v) v)))
+                      (lambda (h k v)
+                        (values k v))
+                      (lambda (h k) k)
+                      (lambda (h k) k)
+                      #f
+                      (lambda (h k) (inexact->exact (floor k)))))
+  (for ([make-hash (in-list (list make-hash make-weak-hash))])
+    (define ht (make-hash))
+    (define cht (mk ht))
+    (hash-set! cht 1.2 'one)
+    (test 'one hash-ref cht 1.3 #f)
+    (test #f hash-ref ht 1.3 #f)
+    ;; Trying to find 1.2 in `ht` likely won't work, because the hash code was mangled
+    (test '(1.2) hash-keys ht)
+    (test '(1.2) hash-keys cht)
+    (hash-set! cht 1.3 'two)
+    (test 'two hash-ref cht 1.2 #f))
+  (let-values ([(prop:blue blue? blue-ref) (make-impersonator-property 'blue)])
+    (define (mk ht)
+      (chaperone-hash ht
+                      (lambda (h k)
+                        (values k
+                                (lambda (h k v) v)))
+                      (lambda (h k v)
+                        (values k v))
+                      (lambda (h k) k)
+                      (lambda (h k) k)
+                      #f
+                      (lambda (h k) (chaperone-vector k
+                                                 (lambda (vec i v)
+                                                   (if (= i 1)
+                                                       (error "ONE")
+                                                       v))
+                                                 (lambda (vec i v) v)))))
+    (define (one-exn? s) (regexp-match? #rx"ONE" (exn-message s)))
+    (let ()
+      (define cht (mk (hash)))
+      (err/rt-test (hash-set cht (vector 1 2) 'vec) one-exn?)
+      (define ht1 (hash-set cht (vector 1) 'vec))
+      (test 'vec hash-ref ht1 (vector 1) #f)
+      (test #f hash-ref ht1 (vector 2) #f))
+    (for ([make-hash (in-list (list make-hash make-weak-hash))])
+      (define ht (make-hash))
+      (define cht (mk ht))
+      (define key (vector 1 2))
+      (define key7 (vector 7))
+      (hash-set! cht key7 'vec7)
+      (test 'vec7 hash-ref cht (vector 7) #f)
+      (test 'vec7 hash-ref ht (vector 7) #f)
+      (hash-set! ht key 'vec2)
+      (test 'vec2 hash-ref ht (vector 1 2))
+      (err/rt-test (hash-ref cht (vector 1 2) #f) one-exn?)
+      (test 2 length (hash-keys cht)) ; can extract keys without hashing or comparing
+      (test 'vec2 hash-ref ht key)
+      (test 'vec7 hash-ref ht key7))))
+    
 ;; ----------------------------------------
 
 ;; Check broken key impersonator:
@@ -1927,7 +2183,7 @@
        #:a "x"))
 
 ;; ----------------------------------------
-;; Check that importantor transformations are applied for printing:
+;; Check that impersonator transformations are applied for printing:
 
 (let ()
   (define ht 

@@ -1,6 +1,6 @@
 /*
   Racket
-  Copyright (c) 2004-2015 PLT Design Inc.
+  Copyright (c) 2004-2016 PLT Design Inc.
   Copyright (c) 1995-2001 Matthew Flatt
   All rights reserved.
 
@@ -417,6 +417,7 @@ void scheme_init_exn_config(void);
 #endif
 #ifdef WINDOWS_PROCESSES
 void scheme_init_thread_memory(void);
+void scheme_release_process_job_object(void);
 #endif
 void scheme_init_module_resolver(void);
 
@@ -455,6 +456,7 @@ extern Scheme_Object *scheme_apply_proc;
 extern Scheme_Object *scheme_values_func;
 extern Scheme_Object *scheme_procedure_p_proc;
 extern Scheme_Object *scheme_procedure_arity_includes_proc;
+extern Scheme_Object *scheme_procedure_specialize_proc;
 extern Scheme_Object *scheme_void_proc;
 extern Scheme_Object *scheme_void_p_proc;
 extern Scheme_Object *scheme_syntax_p_proc;
@@ -594,6 +596,22 @@ Scheme_Object *scheme_hash_table_iterate_start(int argc, Scheme_Object *argv[]);
 Scheme_Object *scheme_hash_table_iterate_next(int argc, Scheme_Object *argv[]);
 Scheme_Object *scheme_hash_table_iterate_value(int argc, Scheme_Object *argv[]);
 Scheme_Object *scheme_hash_table_iterate_key(int argc, Scheme_Object *argv[]);
+
+Scheme_Object *scheme_hash_get_w_key_wraps(Scheme_Hash_Table *table, Scheme_Object *key,
+                                           Scheme_Object *key_wraps);
+void scheme_hash_set_w_key_wraps(Scheme_Hash_Table *table, Scheme_Object *key, Scheme_Object *val,
+                                 Scheme_Object *key_wraps);
+Scheme_Bucket *scheme_bucket_or_null_from_table_w_key_wraps(Scheme_Bucket_Table *table,
+                                                            const char *key, int add,
+                                                            Scheme_Object *key_wraps);
+void scheme_add_to_table_w_key_wraps(Scheme_Bucket_Table *table, const char *key, void *val, 
+                                     int constant, Scheme_Object *key_wraps);
+void *scheme_lookup_in_table_w_key_wraps(Scheme_Bucket_Table *table, const char *key,
+                                         Scheme_Object *key_wraps);
+Scheme_Object *scheme_hash_tree_get_w_key_wraps(Scheme_Hash_Tree *tree, Scheme_Object *key,
+                                                Scheme_Object *key_wraps);
+Scheme_Hash_Tree *scheme_hash_tree_set_w_key_wraps(Scheme_Hash_Tree *tree, Scheme_Object *key, Scheme_Object *val,
+                                                   Scheme_Object *key_wraps);
 
 /*========================================================================*/
 /*                    thread state and maintenance                        */
@@ -755,6 +773,7 @@ struct Scheme_Custodian {
   int gc_owner_set;
   Scheme_Object *cust_boxes;
   int num_cust_boxes, checked_cust_boxes;
+  int really_doing_accounting;
 #endif
 };
 
@@ -830,6 +849,9 @@ struct Scheme_Config {
 extern Scheme_Object *scheme_parameterization_key;
 extern Scheme_Object *scheme_exn_handler_key;
 extern Scheme_Object *scheme_break_enabled_key;
+
+Scheme_Object *scheme_extend_parameterization(int argc, Scheme_Object *args[]);
+XFORM_NONGCING int scheme_is_parameter(Scheme_Object *o);
 
 extern void scheme_flatten_config(Scheme_Config *c);
 
@@ -2737,7 +2759,7 @@ typedef struct Scheme_Closure_Data
 
 XFORM_NONGCING void scheme_boxmap_set(mzshort *boxmap, int j, int bit, int delta);
 XFORM_NONGCING int scheme_boxmap_get(mzshort *boxmap, int j, int delta);
-XFORM_NONGCING int boxmap_size(int n);
+XFORM_NONGCING int scheme_boxmap_size(int n);
 
 int scheme_has_method_property(Scheme_Object *code);
 
@@ -2780,9 +2802,14 @@ typedef struct Scheme_Native_Closure_Data {
   /* Thumb code is off by one, need real start for GC */
   void *retain_code;
 #endif
+  void *eq_key; /* for `procedure-closure-contents-eq?` */
 } Scheme_Native_Closure_Data;
 
 #define SCHEME_NATIVE_CLOSURE_DATA_FLAGS(obj) MZ_OPT_HASH_KEY(&(obj)->iso)
+
+/* This flag is set pre-JIT: */
+#define NATIVE_SPECIALIZED 0x1
+/* Other flags are in "jit.h" */
 
 typedef struct {
   Scheme_Object so;
@@ -2979,6 +3006,8 @@ Scheme_Native_Closure_Data *scheme_generate_case_lambda(Scheme_Case_Lambda *cl);
 
 void scheme_delay_load_closure(Scheme_Closure_Data *data);
 
+Scheme_Object *scheme_intdef_bind_identifiers(Scheme_Object *intdef);
+  
 #define scheme_add_good_binding(i,v,f) (f->values[i] = v)
 
 Scheme_Object *scheme_compiled_void(void);
@@ -3713,7 +3742,7 @@ Scheme_Object *scheme_modidx_shift(Scheme_Object *modidx,
 				   Scheme_Object *shift_to_modidx);
 
 Scheme_Object *scheme_modidx_submodule(Scheme_Object *modidx);
-Scheme_Object *scheme_get_submodule_empty_self_modidx(Scheme_Object *submodule_path);
+Scheme_Object *scheme_get_submodule_empty_self_modidx(Scheme_Object *submodule_path, int can_cache);
 
 #define SCHEME_RMPP(o) (SAME_TYPE(SCHEME_TYPE((o)), scheme_resolved_module_path_type))
 #define SCHEME_MODNAMEP(obj)  (SAME_TYPE(SCHEME_TYPE(obj), scheme_resolved_module_path_type))
@@ -4236,6 +4265,7 @@ void scheme_hash_tree_tie_placeholder(Scheme_Hash_Tree *t, Scheme_Hash_Tree *bas
 XFORM_NONGCING Scheme_Hash_Tree *scheme_hash_tree_resolve_placeholder(Scheme_Hash_Tree *t);
 int scheme_hash_tree_kind(Scheme_Hash_Tree *t);
 XFORM_NONGCING int scheme_eq_hash_tree_subset_of(Scheme_Hash_Tree *t1, Scheme_Hash_Tree *t2);
+XFORM_NONGCING int scheme_eq_hash_tree_subset_match_of(Scheme_Hash_Tree *t1, Scheme_Hash_Tree *t2);
 intptr_t scheme_hash_tree_key_hash(Scheme_Hash_Tree *t1);
 
 void scheme_set_root_param(int p, Scheme_Object *v);

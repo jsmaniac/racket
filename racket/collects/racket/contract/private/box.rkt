@@ -3,8 +3,7 @@
 (require (for-syntax racket/base)
          "prop.rkt"
          "blame.rkt"
-         "guts.rkt"
-         "misc.rkt")
+         "guts.rkt")
 
 (provide box-immutable/c 
          (rename-out [wrap-box/c box/c]))
@@ -100,11 +99,11 @@
      (cond
        [(and (equal? this-immutable #t)
              (equal? that-immutable #t))
-        (contract-stronger? this-content-r that-content-r)]
+        (contract-struct-stronger? this-content-r that-content-r)]
        [(or (equal? that-immutable 'dont-care)
             (equal? this-immutable that-immutable))
-        (and (contract-stronger? this-content-r that-content-r)
-             (contract-stronger? that-content-w this-content-w))]
+        (and (contract-struct-stronger? this-content-r that-content-r)
+             (contract-struct-stronger? that-content-w this-content-w))]
        [else #f])]
     [else #f]))
 
@@ -128,32 +127,7 @@
            [fail-proc (fail-proc neg-party)]
            [else
             (late-neg-proj (unbox val) neg-party)
-            val]))))
-   #:projection
-   (λ (ctc)
-     (λ (blame)
-       (λ (val)
-         (check-box/c ctc val blame)
-         (((contract-projection (base-box/c-content-w ctc)) blame) (unbox val))
-         val)))))
-
-(define (ho-projection box-wrapper)
-  (λ (ctc)
-    (let ([elem-w-ctc (base-box/c-content-w ctc)]
-          [elem-r-ctc (base-box/c-content-r ctc)]
-          [immutable (base-box/c-immutable ctc)])
-      (λ (blame)
-        (let ([pos-elem-r-proj ((contract-projection elem-r-ctc) blame)]
-              [neg-elem-w-proj ((contract-projection elem-w-ctc) (blame-swap blame))])
-          (λ (val)
-            (check-box/c ctc val blame)
-            (if (and (immutable? val) (not (chaperone? val)))
-                (box-immutable (pos-elem-r-proj (unbox val)))
-                (box-wrapper val
-                             (λ (b v) (pos-elem-r-proj v)) ; unbox-proc
-                             (λ (b v) (neg-elem-w-proj v)) ; set-proc
-                             impersonator-prop:contracted ctc
-                             impersonator-prop:blame blame))))))))
+            val]))))))
 
 (define (ho-late-neg-projection chaperone/impersonate-box)
   (λ (ctc)
@@ -188,8 +162,7 @@
    #:name box/c-name
    #:first-order box/c-first-order
    #:stronger box/c-stronger
-   #:late-neg-projection (ho-late-neg-projection chaperone-box)
-   #:projection (ho-projection chaperone-box)))
+   #:late-neg-projection (ho-late-neg-projection chaperone-box)))
 
 (define-struct (impersonator-box/c base-box/c) ()
   #:property prop:custom-write custom-write-property-proc
@@ -198,8 +171,7 @@
    #:name box/c-name
    #:first-order box/c-first-order
    #:stronger box/c-stronger
-   #:late-neg-projection (ho-late-neg-projection impersonate-box)
-   #:projection (ho-projection impersonate-box)))
+   #:late-neg-projection (ho-late-neg-projection impersonate-box)))
 
 (define-syntax (wrap-box/c stx)
   (syntax-case stx ()
