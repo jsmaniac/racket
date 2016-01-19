@@ -1063,6 +1063,7 @@ typedef struct Scheme_Chaperone {
 
 #define SCHEME_CHAPERONE_FLAGS(c) MZ_OPT_HASH_KEY(&(c)->iso)
 #define SCHEME_CHAPERONE_IS_IMPERSONATOR 0x1
+#define SCHEME_PROC_CHAPERONE_CALL_DIRECT 0x2
 
 #define SCHEME_CHAPERONE_VAL(obj) (((Scheme_Chaperone *)obj)->val)
 
@@ -3332,6 +3333,7 @@ int scheme_check_structure_shape(Scheme_Object *e, Scheme_Object *expected);
 int scheme_decode_struct_shape(Scheme_Object *shape, intptr_t *_v);
 int scheme_closure_preserves_marks(Scheme_Object *p);
 int scheme_native_closure_preserves_marks(Scheme_Object *p);
+int scheme_native_closure_is_single_result(Scheme_Object *rator);
 
 int scheme_is_env_variable_boxed(Scheme_Comp_Env *env, int which);
 

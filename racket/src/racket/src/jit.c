@@ -453,8 +453,33 @@ Scheme_Object *scheme_extract_global(Scheme_Object *o, Scheme_Native_Closure *nc
   return globs->a[pos];
 }
 
+static Scheme_Object *extract_syntax(Scheme_Quote_Syntax *qs, Scheme_Native_Closure *nc)
+{
+  /* GLOBAL ASSUMPTION: we assume that globals are the last thing
+     in the closure; grep for "GLOBAL ASSUMPTION" in fun.c. */
+  Scheme_Prefix *globs;
+  int i, pos;
+  Scheme_Object *v;
+
+  globs = (Scheme_Prefix *)nc->vals[nc->code->u2.orig_code->closure_size - 1];
+
+  i = qs->position;
+  pos = qs->midpoint;
+
+  v = globs->a[i+pos+1];
+  if (!v) {
+    v = globs->a[pos];
+    v = scheme_delayed_shift((Scheme_Object **)v, i);
+    globs->a[i+pos+1] = v;
+  }
+
+  return v;
+}
+
 static Scheme_Object *extract_closure_local(int pos, mz_jit_state *jitter, int get_constant)
 {
+  if (PAST_LIMIT()) return NULL;
+
   if (pos >= jitter->self_pos - jitter->self_to_closure_delta) {
     pos -= (jitter->self_pos - jitter->self_to_closure_delta);
     if (pos < jitter->nc->code->u2.orig_code->closure_size) {
@@ -489,6 +514,8 @@ Scheme_Object *scheme_extract_closure_local(Scheme_Object *obj, mz_jit_state *ji
 Scheme_Object *scheme_specialize_to_constant(Scheme_Object *obj, mz_jit_state *jitter, int extra_push)
 {
   Scheme_Object *c;
+
+  if (PAST_LIMIT()) return obj;
 
   if (SCHEME_NATIVE_CLOSURE_DATA_FLAGS(jitter->nc->code) & NATIVE_SPECIALIZED) {
     if (SAME_TYPE(SCHEME_TYPE(obj), scheme_local_type)) {
@@ -928,17 +955,21 @@ int scheme_needs_only_target_register(Scheme_Object *obj, int and_can_reorder)
     return (t >= _scheme_compiled_values_types_);
 }
 
+int scheme_native_closure_is_single_result(Scheme_Object *rator)
+{
+  Scheme_Native_Closure *nc = (Scheme_Native_Closure *)rator;
+  if (nc->code->start_code == scheme_on_demand_jit_code)
+    return (SCHEME_CLOSURE_DATA_FLAGS(nc->code->u2.orig_code) & CLOS_SINGLE_RESULT);
+  else
+    return (SCHEME_NATIVE_CLOSURE_DATA_FLAGS(nc->code) & NATIVE_IS_SINGLE_RESULT);
+}
+
 static int produces_single_value(Scheme_Object *rator, int num_args, mz_jit_state *jitter)
 {
   rator = scheme_specialize_to_constant(rator, jitter, num_args);
 
-  if (SAME_TYPE(SCHEME_TYPE(rator), scheme_native_closure_type)) {
-    Scheme_Native_Closure *nc = (Scheme_Native_Closure *)rator;
-    if (nc->code->start_code == scheme_on_demand_jit_code)
-      return (SCHEME_CLOSURE_DATA_FLAGS(nc->code->u2.orig_code) & CLOS_SINGLE_RESULT);
-    else
-      return (SCHEME_NATIVE_CLOSURE_DATA_FLAGS(nc->code) & NATIVE_IS_SINGLE_RESULT);
-  }
+  if (SAME_TYPE(SCHEME_TYPE(rator), scheme_native_closure_type))
+    return scheme_native_closure_is_single_result(rator);
 
   if (SCHEME_PRIMP(rator)) {
     int opt;
@@ -3273,14 +3304,21 @@ int scheme_generate(Scheme_Object *obj, mz_jit_state *jitter, int is_tail, int w
       
         mz_rs_sync();
 
-        jit_movi_i(JIT_R0, WORDS_TO_BYTES(c));
-        jit_movi_i(JIT_R1, (int)(intptr_t)&(((Scheme_Prefix *)0x0)->a[i + p + 1]));
-        jit_movi_i(JIT_R2, (int)(intptr_t)&(((Scheme_Prefix *)0x0)->a[p]));
-        (void)jit_calli(sjc.quote_syntax_code);
+        if (SCHEME_NATIVE_CLOSURE_DATA_FLAGS(jitter->nc->code) & NATIVE_SPECIALIZED) {
+          Scheme_Object *stx;
+          stx = extract_syntax(qs, jitter->nc);
+          scheme_mz_load_retained(jitter, target, stx);
+          CHECK_LIMIT();
+        } else {
+          jit_movi_i(JIT_R0, WORDS_TO_BYTES(c));
+          jit_movi_i(JIT_R1, (int)(intptr_t)&(((Scheme_Prefix *)0x0)->a[i + p + 1]));
+          jit_movi_i(JIT_R2, (int)(intptr_t)&(((Scheme_Prefix *)0x0)->a[p]));
+          (void)jit_calli(sjc.quote_syntax_code);
+          CHECK_LIMIT();
 
-        CHECK_LIMIT();
-        if (target != JIT_R0)
-          jit_movr_p(target, JIT_R0);
+          if (target != JIT_R0)
+            jit_movr_p(target, JIT_R0);
+        }
       }
       
       END_JIT_DATA(10);
@@ -4278,7 +4316,7 @@ static void generate_case_lambda(Scheme_Case_Lambda *c, Scheme_Native_Closure_Da
   Generate_Case_Dispatch_Data gdata;
   Scheme_Closure_Data *data;
   Scheme_Object *o;
-  int i, cnt, num_params, has_rest;
+  int i, cnt, num_params, has_rest, single_result = 1;
   mzshort *arities;
 
   gdata.c = c;
@@ -4302,6 +4340,8 @@ static void generate_case_lambda(Scheme_Case_Lambda *c, Scheme_Native_Closure_Da
     has_rest = ((SCHEME_CLOSURE_DATA_FLAGS(data) & CLOS_HAS_REST) ? 1 : 0);
     if (has_rest && num_params)
       --num_params;
+    if (!(SCHEME_CLOSURE_DATA_FLAGS(data) & CLOS_SINGLE_RESULT))
+      single_result = 0;
 	  
     if (!has_rest) 
       arities[i] = num_params;
@@ -4309,6 +4349,9 @@ static void generate_case_lambda(Scheme_Case_Lambda *c, Scheme_Native_Closure_Da
       arities[i] = -(num_params+1);
   }
   ndata->u.arities = arities;
+
+  if (single_result)
+    SCHEME_NATIVE_CLOSURE_DATA_FLAGS(ndata) |= NATIVE_IS_SINGLE_RESULT;
 }
 
 /*========================================================================*/

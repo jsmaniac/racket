@@ -182,12 +182,15 @@ static Scheme_Object *procedure_to_method(int argc, Scheme_Object *argv[]);
 static Scheme_Object *procedure_equal_closure_p(int argc, Scheme_Object *argv[]);
 static Scheme_Object *procedure_specialize(int argc, Scheme_Object *argv[]);
 static Scheme_Object *chaperone_procedure(int argc, Scheme_Object *argv[]);
+static Scheme_Object *unsafe_chaperone_procedure(int argc, Scheme_Object *argv[]);
 static Scheme_Object *impersonate_procedure(int argc, Scheme_Object *argv[]);
+static Scheme_Object *unsafe_impersonate_procedure(int argc, Scheme_Object *argv[]);
 static Scheme_Object *chaperone_procedure_star(int argc, Scheme_Object *argv[]);
 static Scheme_Object *impersonate_procedure_star(int argc, Scheme_Object *argv[]);
 static Scheme_Object *primitive_p(int argc, Scheme_Object *argv[]);
 static Scheme_Object *primitive_closure_p(int argc, Scheme_Object *argv[]);
 static Scheme_Object *primitive_result_arity (int argc, Scheme_Object *argv[]);
+static Scheme_Object *procedure_result_arity (int argc, Scheme_Object *argv[]);
 static Scheme_Object *call_with_values(int argc, Scheme_Object *argv[]);
 Scheme_Object *scheme_values(int argc, Scheme_Object *argv[]);
 static Scheme_Object *current_print(int argc, Scheme_Object **argv);
@@ -641,6 +644,12 @@ scheme_init_fun (Scheme_Env *env)
 						      1, 1, 1),
 			     env);
 
+  scheme_add_global_constant("procedure-result-arity",
+                             scheme_make_folding_prim(procedure_result_arity,
+                                                      "procedure-result-arity",
+                                                      1, 1, 1),
+                             env);
+
   scheme_add_global_constant("current-print",
 			     scheme_register_parameter(current_print,
 						       "current-print",
@@ -744,6 +753,17 @@ scheme_init_unsafe_fun (Scheme_Env *env)
 
   o = scheme_make_prim_w_arity(chaperone_unsafe_undefined, "chaperone-struct-unsafe-undefined", 1, 1);
   scheme_add_global_constant("chaperone-struct-unsafe-undefined", o, env);
+
+  scheme_add_global_constant("unsafe-chaperone-procedure",
+			     scheme_make_prim_w_arity(unsafe_chaperone_procedure,
+						      "unsafe-chaperone-procedure",
+						      2, -1),
+			     env);
+  scheme_add_global_constant("unsafe-impersonate-procedure",
+			     scheme_make_prim_w_arity(unsafe_impersonate_procedure,
+						      "unsafe-impersonate-procedure",
+						      2, -1),
+			     env);
 }
 
 void
@@ -2873,11 +2893,59 @@ static Scheme_Object *primitive_result_arity(int argc, Scheme_Object *argv[])
       return scheme_make_arity(p->minr, p->maxr);
     }
   } else {
-    scheme_wrong_contract("primitive-result_arity", "primitive?", 0, argc, argv);
+    scheme_wrong_contract("primitive-result-arity", "primitive?", 0, argc, argv);
     return NULL;
   }
-
   return scheme_make_integer(1);
+}
+
+static Scheme_Object *procedure_result_arity(int argc, Scheme_Object *argv[])
+{
+  Scheme_Object *o, *orig_o;
+
+  orig_o = argv[0];
+  o = orig_o;
+
+  if (SCHEME_CHAPERONEP(o))
+    o = SCHEME_CHAPERONE_VAL(o);
+
+  /* Struct procedures could be keyword-accepting and that
+     requires additional complication; defer for now */
+  if (SAME_TYPE(SCHEME_TYPE(o), scheme_proc_struct_type)) {
+    return scheme_false;
+  }
+
+  if (SAME_TYPE(SCHEME_TYPE(o), scheme_closure_type)) {
+    if ((SCHEME_CLOSURE_DATA_FLAGS(SCHEME_COMPILED_CLOS_CODE(o)) & CLOS_SINGLE_RESULT)) {
+      return scheme_make_integer(1);
+    }
+#ifdef MZ_USE_JIT
+  } else if (SAME_TYPE(SCHEME_TYPE(o), scheme_native_closure_type)) {
+    if (scheme_native_closure_is_single_result(o))
+      return scheme_make_integer(1);
+#endif
+  } else if (SAME_TYPE(SCHEME_TYPE(o), scheme_case_closure_type)) {
+    Scheme_Case_Lambda *cl = (Scheme_Case_Lambda *)o;
+    int i;
+    
+    for (i = cl->count; i--; ) {
+      if (!(SCHEME_CLOSURE_DATA_FLAGS(SCHEME_COMPILED_CLOS_CODE(cl->array[i])) & CLOS_SINGLE_RESULT))
+        break;
+    }
+
+    if (i < 0)
+      return scheme_make_integer(1);
+  } else if (SCHEME_PRIMP(o)) {
+    if (((Scheme_Primitive_Proc *)o)->pp.flags & SCHEME_PRIM_IS_MULTI_RESULT) {
+      Scheme_Prim_W_Result_Arity *p = (Scheme_Prim_W_Result_Arity *)o;
+      return scheme_make_arity(p->minr, p->maxr);
+    }
+    return scheme_make_integer(1);
+  } else if (!SCHEME_PROCP(o)) {
+    scheme_wrong_contract("procedure-result-arity", "procedure?", 0, argc, argv);
+    return NULL;
+  }
+  return scheme_false;
 }
 
 Scheme_Object *scheme_object_name(Scheme_Object *a)
@@ -3465,9 +3533,9 @@ static Scheme_Object *procedure_specialize(int argc, Scheme_Object *argv[])
 
 static Scheme_Object *do_chaperone_procedure(const char *name, const char *whating,
                                              int is_impersonator, int pass_self,
-                                             int argc, Scheme_Object *argv[])
+                                             int argc, Scheme_Object *argv[], int is_unsafe)
 {
-  Scheme_Chaperone *px;
+  Scheme_Chaperone *px, *px2;
   Scheme_Object *val = argv[0], *orig, *naya, *r, *app_mark;
   Scheme_Hash_Tree *props;
 
@@ -3476,8 +3544,13 @@ static Scheme_Object *do_chaperone_procedure(const char *name, const char *whati
 
   if (!SCHEME_PROCP(val))
     scheme_wrong_contract(name, "procedure?", 0, argc, argv);
-  if (!SCHEME_FALSEP(argv[1]) && !SCHEME_PROCP(argv[1]))
-    scheme_wrong_contract(name, "(or/c procedure? #f)", 1, argc, argv);
+  if (is_unsafe) {
+    if (!SCHEME_PROCP(argv[1]))
+      scheme_wrong_contract(name, "procedure?", 1, argc, argv);
+  } else {
+    if (!SCHEME_FALSEP(argv[1]) && !SCHEME_PROCP(argv[1]))
+      scheme_wrong_contract(name, "(or/c procedure? #f)", 1, argc, argv);
+  }
 
   orig = get_or_check_arity(val, -1, NULL, 1);
   if (SCHEME_FALSEP(argv[1]))
@@ -3524,42 +3597,79 @@ static Scheme_Object *do_chaperone_procedure(const char *name, const char *whati
   px->props = props;
 
   /* Put the procedure along with known-good arity (to speed checking;
-     initialized to -1) in a vector. An odd-sized vector makes the
-     chaperone recognized as a procedure chaperone, and a size of 5
-     (instead of 3) indicates that the wrapper procedure accepts a
-     "self" argument: */
+     initialized to -1) in a vector. 
+
+     Vector of odd size for redirects means a procedure chaperone,
+     vector with even slots means a structure chaperone.
+     A size of 5 (instead of 3) indicates that the wrapper
+     procedure accepts a "self" argument. An immutable vector
+     means that it wraps a chaperone that wants the "self" 
+     argument.
+
+     If the known-good arity is #f, this means the chaperone
+     wrapper defers directly to SCHEME_VEC_ELES(r)[0] and no
+     arity check is needed.
+  */
   r = scheme_make_vector((pass_self ? 5 : 3), scheme_make_integer(-1));
-  SCHEME_VEC_ELS(r)[0] = argv[1];
+
+  if (SCHEME_FALSEP(argv[1]))
+    SCHEME_VEC_ELS(r)[0] = argv[0];
+  else
+    SCHEME_VEC_ELS(r)[0] = argv[1];
+  if (SCHEME_FALSEP(argv[1]))
+    SCHEME_VEC_ELS(r)[1] = scheme_false;
   SCHEME_VEC_ELS(r)[2] = app_mark;
 
-  /* Vector of odd size for redirects means a procedure chaperone,
-     vector with even slots means a structure chaperone. */
   px->redirects = r;
 
   if (is_impersonator)
     SCHEME_CHAPERONE_FLAGS(px) |= SCHEME_CHAPERONE_IS_IMPERSONATOR;
+  if (is_unsafe || SCHEME_FALSEP(argv[1]))
+    SCHEME_CHAPERONE_FLAGS(px) |= SCHEME_PROC_CHAPERONE_CALL_DIRECT;
+
+  /* If there's a `pass_self` chaperone in px->prev, then we'll need
+     to pass the self proc along. */
+  for (val = px->prev; SCHEME_P_CHAPERONEP(val); val = ((Scheme_Chaperone *)val)->prev) {
+    px2 = (Scheme_Chaperone *)val;
+    if (SCHEME_VECTORP(px2->redirects) && (SCHEME_VEC_SIZE(px2->redirects) & 0x1)) {
+      if ((SCHEME_VEC_SIZE(px2->redirects) > 3)
+          || SCHEME_IMMUTABLEP(px2->redirects))
+        SCHEME_SET_IMMUTABLE(px->redirects);
+      break;
+    }
+  }
 
   return (Scheme_Object *)px;
 }
 
 static Scheme_Object *chaperone_procedure(int argc, Scheme_Object *argv[])
 {
-  return do_chaperone_procedure("chaperone-procedure", "chaperoning", 0, 0, argc, argv);
+  return do_chaperone_procedure("chaperone-procedure", "chaperoning", 0, 0, argc, argv, 0);
+}
+
+static Scheme_Object *unsafe_chaperone_procedure(int argc, Scheme_Object *argv[])
+{
+  return do_chaperone_procedure("unsafe-chaperone-procedure", "chaperoning", 0, 0, argc, argv, 1);
 }
 
 static Scheme_Object *impersonate_procedure(int argc, Scheme_Object *argv[])
 {
-  return do_chaperone_procedure("impersonate-procedure", "impersonating", 1, 0, argc, argv);
+  return do_chaperone_procedure("impersonate-procedure", "impersonating", 1, 0, argc, argv, 0);
+}
+
+static Scheme_Object *unsafe_impersonate_procedure(int argc, Scheme_Object *argv[])
+{
+  return do_chaperone_procedure("unsafe-impersonate-procedure", "impersonating", 1, 0, argc, argv, 1);
 }
 
 static Scheme_Object *chaperone_procedure_star(int argc, Scheme_Object *argv[])
 {
-  return do_chaperone_procedure("chaperone-procedure*", "chaperoning", 0, 1, argc, argv);
+  return do_chaperone_procedure("chaperone-procedure*", "chaperoning", 0, 1, argc, argv, 0);
 }
 
 static Scheme_Object *impersonate_procedure_star(int argc, Scheme_Object *argv[])
 {
-  return do_chaperone_procedure("impersonate-procedure*", "impersonating", 1, 1, argc, argv);
+  return do_chaperone_procedure("impersonate-procedure*", "impersonating", 1, 1, argc, argv, 0);
 }
 
 static Scheme_Object *apply_chaperone_k(void)
@@ -3741,7 +3851,7 @@ Scheme_Object *scheme_apply_chaperone(Scheme_Object *o, int argc, Scheme_Object 
    checks & 0x2 => no tail; checks == 0x3 => no tail or multiple */
 {
   Scheme_Chaperone *px;
-  Scheme_Object *v, *a[1], *a2[MAX_QUICK_CHAP_ARGV], **argv2, *post, *result_v, *orig_obj, *app_mark, *self_proc;
+  Scheme_Object *v, *a[1], *a2[MAX_QUICK_CHAP_ARGV], **argv2, *post, *result_v, *orig_obj, *app_mark, *self_proc, *simple_call;
   int c, i, need_restore = 0;
   int need_pop_mark;
   Scheme_Cont_Frame_Data cframe;
@@ -3767,9 +3877,28 @@ Scheme_Object *scheme_apply_chaperone(Scheme_Object *o, int argc, Scheme_Object 
       self_proc = o;
   }
 
-  if (SCHEME_FALSEP(SCHEME_VEC_ELS(px->redirects)[0])) {
+  /* Ensure that the original procedure accepts `argc' arguments: */
+  if (!SCHEME_FALSEP(SCHEME_VEC_ELS(px->redirects)[1]) /* check not needed for props-only mode */
+      && (argc != SCHEME_INT_VAL(SCHEME_VEC_ELS(px->redirects)[1]))) {
+    a[0] = px->prev;
+    if (!scheme_check_proc_arity(NULL, argc, 0, 0, a)) {
+      /* Apply the original procedure, in case the chaperone would accept
+         `argc' arguments (in addition to the original procedure's arity)
+         in case the methodness of the original procedure is different
+         from the chaperone, or in case the procedures have different names. */
+      (void)_scheme_apply_multi(px->prev, argc, argv);
+      scheme_signal_error("internal error: unexpected success applying chaperoned/proxied procedure");
+      return NULL;
+    }
+    /* record that argc is ok, on the grounds that the function is likely
+       to be applied to argc arguments again */
+    SCHEME_VEC_ELS(px->redirects)[1] = scheme_make_integer(argc);
+  }
+
+  if (SCHEME_CHAPERONE_FLAGS(px) & SCHEME_PROC_CHAPERONE_CALL_DIRECT) {
+    simple_call = SCHEME_VEC_ELS(px->redirects)[0];
     /* no redirection procedure */
-    if (SCHEME_CHAPERONEP(px->prev)) {
+    if (SCHEME_IMMUTABLEP(px->redirects)) {
       /* communicate `self_proc` to the next layer: */
       scheme_current_thread->self_for_proc_chaperone = self_proc;
     }
@@ -3777,16 +3906,16 @@ Scheme_Object *scheme_apply_chaperone(Scheme_Object *o, int argc, Scheme_Object 
       /* cannot return a tail call */
       MZ_CONT_MARK_POS -= 2;
       if (checks & 0x1) {
-        v = _scheme_apply(px->prev, argc, argv);
-      } else if (SAME_TYPE(SCHEME_TYPE(px->prev), scheme_native_closure_type)) {
-        v = _apply_native(px->prev, argc, argv);
+        v = _scheme_apply(simple_call, argc, argv);
+      } else if (SAME_TYPE(SCHEME_TYPE(simple_call), scheme_native_closure_type)) {
+        v = _apply_native(simple_call, argc, argv);
       } else {
-        v = _scheme_apply_multi(px->prev, argc, argv);
+        v = _scheme_apply_multi(simple_call, argc, argv);
       }
       MZ_CONT_MARK_POS += 2;
       return v;
     } else
-      return _scheme_tail_apply(px->prev, argc, argv);
+      return _scheme_tail_apply(simple_call, argc, argv);
   }
 
   if (argv == MZ_RUNSTACK) {
@@ -3802,23 +3931,6 @@ Scheme_Object *scheme_apply_chaperone(Scheme_Object *o, int argc, Scheme_Object 
       memcpy(argv2, argv, sizeof(Scheme_Object*) * argc);
       argv = argv2;
     }
-  }
-
-  /* Ensure that the original procedure accepts `argc' arguments: */
-  if (argc != SCHEME_INT_VAL(SCHEME_VEC_ELS(px->redirects)[1])) {
-    a[0] = px->prev;
-    if (!scheme_check_proc_arity(NULL, argc, 0, 0, a)) {
-      /* Apply the original procedure, in case the chaperone would accept
-         `argc' arguments (in addition to the original procedure's arity)
-         in case the methodness of the original procedure is different
-         from the chaperone, or in case the procedures have different names. */
-      (void)_scheme_apply_multi(px->prev, argc, argv);
-      scheme_signal_error("internal error: unexpected success applying chaperoned/proxied procedure");
-      return NULL;
-    }
-    /* record that argc is ok, on the grounds that the function is likely
-       to be applied to argc arguments again */
-    SCHEME_VEC_ELS(px->redirects)[1] = scheme_make_integer(argc);
   }
 
   app_mark = SCHEME_VEC_ELS(px->redirects)[2];
@@ -3940,7 +4052,7 @@ Scheme_Object *scheme_apply_chaperone(Scheme_Object *o, int argc, Scheme_Object 
     /* No filter for the result, so tail call: */
     if (app_mark)
       scheme_set_cont_mark(SCHEME_CAR(app_mark), SCHEME_CDR(app_mark));
-    if (SCHEME_CHAPERONEP(px->prev)) {
+    if (SCHEME_IMMUTABLEP(px->redirects)) {
       /* commuincate `self_proc` to the next layer: */
       scheme_current_thread->self_for_proc_chaperone = self_proc;
     }
@@ -3982,7 +4094,7 @@ Scheme_Object *scheme_apply_chaperone(Scheme_Object *o, int argc, Scheme_Object 
     if (need_pop_mark)
       MZ_CONT_MARK_POS -= 2;
 
-    if (SCHEME_CHAPERONEP(px->prev)) {
+    if (SCHEME_IMMUTABLEP(px->redirects)) {
       /* commuincate `self_proc` to the next layer: */
       scheme_current_thread->self_for_proc_chaperone = self_proc;
     }

@@ -52,7 +52,7 @@
 
 (define tail-contract-key (gensym 'tail-contract-key))
 
-(define-for-syntax (check-tail-contract rng-ctcs blame-party-info neg-party rng-checkers call-gen)
+(define-for-syntax (check-tail-contract rng-ctcs blame-party-info neg-party rng-checkers call-gen blame+neg-party)
   (unless (identifier? rng-ctcs)
     (raise-argument-error 'check-tail-contract
                           "identifier?"
@@ -61,7 +61,7 @@
   #`(call-with-immediate-continuation-mark
      tail-contract-key
      (λ (m)
-       (if (tail-marks-match? m #,rng-ctcs #,blame-party-info #,neg-party)
+       (if (tail-marks-match? m #,rng-ctcs #,blame-party-info #,neg-party #,blame+neg-party)
            #,(call-gen #'())
            #,(call-gen rng-checkers)))))
 
@@ -69,25 +69,28 @@
 ;; rng-ctc : (or/c #f (listof ctc))
 ;; blame-party-info : (list/c pos-party boolean?[blame-swapped?])
 ;; neg-party : neg-party
-(define (tail-marks-match? m rng-ctcs blame-party-info neg-party)
-  (and m
-       rng-ctcs
-       (eq? (car m) neg-party)
-       (let ([mark-blame-part-info (cadr m)])
-         (and (eq? (car mark-blame-part-info) (car blame-party-info))
-              (eq? (cadr mark-blame-part-info) (cadr blame-party-info))))
-       (let loop ([m (cddr m)]
-                  [rng-ctcs rng-ctcs])
-         (cond
-           [(null? m) (null? rng-ctcs)]
-           [(null? rng-ctcs) (null? m)]
-           [else
-            (define m1 (car m))
-            (define rng-ctc1 (car rng-ctcs))
-            (cond
-              [(eq? m1 rng-ctc1) (loop (cdr m) (cdr rng-ctcs))]
-              [(contract-struct-stronger? m1 rng-ctc1) (loop (cdr m) (cdr rng-ctcs))]
-              [else #f])]))))
+;; blame+neg-party : (cons/c blame? neg-party)
+(define (tail-marks-match? m rng-ctcs blame-party-info neg-party blame+neg-party)
+  (with-contract-continuation-mark
+   blame+neg-party
+   (and m
+        rng-ctcs
+        (eq? (car m) neg-party)
+        (let ([mark-blame-part-info (cadr m)])
+          (and (eq? (car mark-blame-part-info) (car blame-party-info))
+               (eq? (cadr mark-blame-part-info) (cadr blame-party-info))))
+        (let loop ([m (cddr m)]
+                   [rng-ctcs rng-ctcs])
+          (cond
+            [(null? m) (null? rng-ctcs)]
+            [(null? rng-ctcs) (null? m)]
+            [else
+             (define m1 (car m))
+             (define rng-ctc1 (car rng-ctcs))
+             (cond
+               [(eq? m1 rng-ctc1) (loop (cdr m) (cdr rng-ctcs))]
+               [(contract-struct-stronger? m1 rng-ctc1) (loop (cdr m) (cdr rng-ctcs))]
+               [else #f])])))))
 
 ;; used as part of the information in the continuation mark
 ;; that records what is to be checked for a pending contract
@@ -115,27 +118,30 @@
                      (λ (val neg-party)
                        (check-is-a-procedure orig-blame neg-party val)
                        (define (res-checker res-x ...) (values/drop (p-app-x res-x neg-party) ...))
+                       (define blame+neg-party (cons orig-blame neg-party))
                        (wrapper
                         val
                         (make-keyword-procedure
                          (λ (kwds kwd-vals . args)
                            (with-contract-continuation-mark
-                            (cons orig-blame neg-party)
+                            blame+neg-party
                             #,(check-tail-contract
                                #'rngs-list
                                #'blame-party-info
                                #'neg-party
                                (list #'res-checker)
-                               (λ (s) #`(apply values #,@s kwd-vals args)))))
+                               (λ (s) #`(apply values #,@s kwd-vals args))
+                               #'blame+neg-party)))
                          (λ args
                            (with-contract-continuation-mark
-                            (cons orig-blame neg-party)
+                            blame+neg-party
                             #,(check-tail-contract
                                #'rngs-list
                                #'blame-party-info
                                #'neg-party
                                (list #'res-checker)
-                               (λ (s) #`(apply values #,@s args))))))
+                               (λ (s) #`(apply values #,@s args))
+                               #'blame+neg-party))))
                         impersonator-prop:contracted ctc
                         impersonator-prop:application-mark
                         (cons tail-contract-key (list neg-party blame-party-info rngs-x ...))))))))
@@ -346,7 +352,8 @@
                                                         blame-party-info
                                                         #'neg-party
                                                         #'(rng-checker-name ...)
-                                                        inner-stx-gen)))]
+                                                        inner-stx-gen
+                                                        #'(cons blame neg-party))))]
                             [kwd-return
                              (let* ([inner-stx-gen
                                      (if need-apply-values?
@@ -370,7 +377,8 @@
                                                               blame-party-info
                                                               #'neg-party
                                                               #'(rng-checker-name ...)
-                                                              outer-stx-gen))))])
+                                                              outer-stx-gen
+                                                              #'(cons blame neg-party)))))])
                 (with-syntax ([basic-lambda-name (gen-id 'basic-lambda)]
                               [basic-lambda #'(λ basic-params
                                                 ;; Arrow contract domain checking is instrumented
@@ -398,7 +406,7 @@
                        #`(let-values ([(rng-checker-name ...) (values/drop rng-checker ...)])
                            (let ([basic-lambda-name basic-lambda])
                              (arity-checking-wrapper val blame neg-party
-                                                     basic-lambda-name
+                                                     basic-lambda-name #f #f #f
                                                      void
                                                      #,min-method-arity
                                                      #,max-method-arity
@@ -410,7 +418,7 @@
                        #`(let-values ([(rng-checker-name ...) (values/drop rng-checker ...)])
                            (let ([kwd-lambda-name kwd-lambda])
                              (arity-checking-wrapper val blame neg-party
-                                                     void
+                                                     void #f #f #f
                                                      kwd-lambda-name
                                                      #,min-method-arity
                                                      #,max-method-arity
@@ -423,7 +431,7 @@
                            (let ([basic-lambda-name basic-lambda]
                                  [kwd-lambda-name kwd-lambda])
                              (arity-checking-wrapper val blame neg-party
-                                                     basic-lambda-name
+                                                     basic-lambda-name #f #f #f
                                                      kwd-lambda-name
                                                      #,min-method-arity
                                                      #,max-method-arity
@@ -433,15 +441,34 @@
                                                      '(opt-kwd ...))))])))))))))))
 
 ;; should we pass both the basic-lambda and the kwd-lambda?
-(define (arity-checking-wrapper val blame neg-party basic-lambda kwd-lambda
+;; if basic-unsafe-lambda is #f, returns only the one value,
+;; namely the chaperone wrapper. Otherwise, returns two values,
+;; a procedure and a boolean indicating it the procedure is the
+;; basic-unsafe-lambda or not; note that basic-unsafe-lambda might
+;; also be #t, but that happens only when we know that basic-lambda
+;; can't be chosen (because there are keywords involved)
+(define (arity-checking-wrapper val blame neg-party basic-lambda
+                                basic-unsafe-lambda
+                                basic-unsafe-lambda/result-values-assumed contract-result-val-count
+                                kwd-lambda
                                 min-method-arity max-method-arity min-arity max-arity 
                                 req-kwd opt-kwd)
   ;; should not build this unless we are in the 'else' case (and maybe not at all)
   (cond
     [(matches-arity-exactly? val min-arity max-arity req-kwd opt-kwd)
-     (if (and (null? req-kwd) (null? opt-kwd)) 
-         basic-lambda
-         kwd-lambda)]
+     (if (and (null? req-kwd) (null? opt-kwd))
+         (cond
+           [(and basic-unsafe-lambda
+                 basic-unsafe-lambda/result-values-assumed
+                 (equal? contract-result-val-count
+                         (procedure-result-arity val)))
+            (values basic-unsafe-lambda/result-values-assumed #t)]
+           [basic-unsafe-lambda
+            (values basic-unsafe-lambda #t)]
+           [else basic-lambda])
+         (if basic-unsafe-lambda
+             (values kwd-lambda #f)
+             kwd-lambda))]
     [else
      (define-values (vr va) (procedure-keywords val))
      (define all-kwds (append req-kwd opt-kwd))
@@ -493,9 +520,13 @@
              (raise-blame-error (blame-swap blame) #:missing-party neg-party val
                                 "expected required keyword ~a"
                                 (car req-kwd)))))
-     (if (or (not va) (pair? vr) (pair? va))
-         (make-keyword-procedure kwd-checker basic-checker-name)
-         basic-checker-name)]))
+     (define proc
+       (if (or (not va) (pair? vr) (pair? va))
+           (make-keyword-procedure kwd-checker basic-checker-name)
+           basic-checker-name))
+     (if basic-unsafe-lambda
+         (values proc #f)
+         proc)]))
 
 (define (raise-wrong-number-of-args-error
          blame #:missing-party [missing-party #f] val
