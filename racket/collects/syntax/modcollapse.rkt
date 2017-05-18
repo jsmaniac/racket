@@ -32,7 +32,7 @@
                         . -> . simple-rel-to-module-path-v/c)]
  [collapse-module-path-index (case->
                               (module-path-index?
-                               . -> . module-path?)
+                               . -> . (or/c module-path? #f))
                               ((or/c symbol? module-path-index?)
                                rel-to-module-path-v/c
                                . -> . simple-rel-to-module-path-v/c))])

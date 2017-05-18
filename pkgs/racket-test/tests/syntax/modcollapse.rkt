@@ -1,5 +1,7 @@
 #lang racket/base
-(require syntax/modcollapse)
+(require syntax/modcollapse
+         (for-syntax racket/base
+                     syntax/modcollapse))
 
 (define (check got expected)
   (unless (equal? got expected)
@@ -153,3 +155,15 @@
                                    here)
        (build-path here-dir "x" "apple.rkt"))
 
+
+(define-syntax (try-collapse-empty-module-path-index stx)
+  (datum->syntax
+   #f
+   #`'#,(collapse-module-path-index
+         (car
+          (identifier-binding
+           (syntax-local-lift-expression
+            (quote-syntax 1)))))))
+
+(check (try-collapse-empty-module-path-index)
+       #f)

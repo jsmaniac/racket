@@ -54,7 +54,7 @@ base.
                                                                     (-> module-path?))])
             module-path?]
            [(collapse-module-path-index [module-path-index module-path-index?])
-            module-path?])]{
+            (or/c module-path? #f)])]{
 
 Like @racket[collapse-module-path] when given two arguments, but the
 input is a @techlink[#:doc refman]{module path index}; in this case,
@@ -67,7 +67,14 @@ is relative. The resulting module path is not necessarily normalized.
 
 @history[#:changed "6.1.1.8" @elem{Added the one-argument variant for
                                    collapsing a relative module path
-                                   index.}]}
+                                   index.}
+         #:changed "6.9.0.4" @elem{The one-argument variant may return
+                                   @racket{#false}, e.g. for an empty
+                                   module path index such as the
+                                   @racket{source-mod} and
+                                   @racket{nominal-source-mod} of an
+                                   identifier created with
+                                   @racket{syntax-local-lift-expression}.}]}
 
 
 @close-eval[evaluator]
